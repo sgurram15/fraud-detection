@@ -1,0 +1,16 @@
+pandas
+numpy<2          # conda-built stack (pandas/mpl/numexpr) is NumPy 1.x ABI; shap must not pull NumPy 2.x
+scikit-learn
+imbalanced-learn
+xgboost
+shap
+fastapi
+uvicorn
+mlflow
+kafka-python
+evidently
+matplotlib
+seaborn
+jupyter
+kaggle
+kagglehub

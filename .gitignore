@@ -1,0 +1,29 @@
+# --- Credentials / secrets ---
+kaggle.json
+.env
+*.env
+aws_credentials
+**/aws_credentials
+.aws/
+
+# --- Raw data (large; do not commit — exceeds GitHub 100MB limit) ---
+data/raw/*.csv
+data/raw/**/*.csv
+data/raw/*.zip
+data/raw/**/*.zip
+data/processed/
+
+# --- Model artifacts ---
+*.pkl
+
+# --- MLflow ---
+mlruns/
+mlflow.db
+
+# --- Python ---
+__pycache__/
+*.pyc
+*.pyo
+.ipynb_checkpoints/
+.venv/
+venv/
