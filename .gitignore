@@ -20,6 +20,10 @@ data/processed/
 mlruns/
 mlflow.db
 
+# --- Generated outputs (plots, metrics, reports) — not version controlled ---
+docs/feature_validation/
+docs/model_performance/
+
 # --- Python ---
 __pycache__/
 *.pyc
