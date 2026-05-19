@@ -21,7 +21,8 @@
       "Bash(python -c \"import json; d=json.load\\(open\\('docs/model_performance/baseline_metrics.json'\\)\\); print\\('keys:', list\\(d\\)\\); print\\('default_thr:', d['default_threshold']\\); print\\('op_points:', json.dumps\\(d['operating_points_test'], indent=1\\)\\); print\\('costs:', d['threshold_options_validation']['costs']\\)\")",
       "Bash(grep -aA6 'Operating Point' /tmp/tb100k.txt)",
       "Bash(TUNE_SMOKE=1 python src/models/tune_model.py)",
-      "Bash(echo \"EXIT=$?\")"
+      "Bash(echo \"EXIT=$?\")",
+      "Bash(python -m py_compile scripts/aws/_common.py scripts/aws/setup_s3.py scripts/aws/upload_data.py scripts/aws/launch_ec2.py scripts/aws/stop_ec2.py scripts/aws/run_training_on_ec2.py)"
     ]
   }
 }

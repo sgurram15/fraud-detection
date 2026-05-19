@@ -1,66 +1,146 @@
-# Real-Time Fraud Detection System
+# PSP Real-Time Fraud Detection — Proof of Concept
 
-A proof of concept (PoC) for a real-time **Payment Service Provider (PSP)** fraud
-detection system. The goal is to demonstrate an end-to-end machine learning
-pipeline that scores card payment transactions for fraud risk as they stream
-through, with the model governance and monitoring controls expected in a
-UK-regulated financial services context.
+## 1. What this is
 
-## What this is
+This is a proof-of-concept real-time fraud detection system for a UK Payment
+Service Provider (PSP). It ingests card-transaction events, engineers
+behavioural and velocity features in a leakage-safe way, scores each
+transaction with a gradient-boosted model (XGBoost), and exposes the score and
+a SHAP-based explanation through a low-latency serving layer. It is built to
+mirror, at small scale, the architecture a regulated PSP would run in
+production (the local pieces map one-to-one onto the AWS design in
+`docs/production_architecture.md`).
 
-This repository is an exploratory PoC, not a production system. It is intended
-to validate the approach, surface engineering and modelling trade-offs, and
-produce artefacts (including an FCA-aligned model card) that can support a
-later production build and any required regulatory engagement.
+Fraud screening at a PSP is a regulated control, not just an ML model. The
+system is shaped by FCA expectations: decisions must be explainable
+(Consumer Duty, UK GDPR Art. 22), performance claims must be free of data
+leakage and reproducible (model governance), the operating point is a
+business decision with a documented commercial constraint (no more than ~5% of
+legitimate transactions blocked), and known limitations are recorded rather
+than hidden. See `docs/model_card.md` for the FCA-aligned model card and
+`docs/data_dictionary.md` for the data.
 
-## Scope
+## 2. Architecture overview
 
-- Ingest a stream of PSP card transactions (Kafka simulation).
-- Engineer behavioural and velocity features in real time.
-- Score each transaction with a gradient-boosted model (XGBoost) and explain
-  predictions with SHAP.
-- Serve scores over a low-latency FastAPI endpoint.
-- Track experiments and models with MLflow.
-- Monitor for data and model drift (Evidently) so degradation is caught early.
+Two versions are described in detail in **`docs/production_architecture.md`**:
 
-## Project structure
+- **Version 1 (this repo, local PoC):** simulated stream → in-process feature
+  store → XGBoost → FastAPI serving → SHAP → local MLflow (SQLite backend).
+- **Version 2 (AWS production):** Amazon MSK → Managed Apache Flink →
+  SageMaker (training/registry/endpoints) → Bedrock decision reasoning →
+  CloudTrail immutable audit, multi-region active-active, all in `eu-west-2`
+  (London) for data residency.
 
-```
-fraud-detection/
-├── data/              Raw and processed datasets
-│   ├── raw/
-│   └── processed/
-├── notebooks/         Exploration and experimentation
-├── src/
-│   ├── features/      Feature engineering pipeline
-│   ├── models/        Training and evaluation
-│   ├── api/           FastAPI serving layer
-│   ├── streaming/     Kafka simulation
-│   └── monitoring/    Model drift detection
-├── tests/             Unit tests
-├── docs/              Architecture and FCA model card
-├── requirements.txt
-└── README.md
-```
+## 3. Local setup
 
-## Getting started
+Prerequisites: Python 3.11, git. The IEEE-CIS dataset requires a Kaggle
+account/API token.
 
-```bash
+**Windows (PowerShell):**
+```powershell
+git clone https://github.com/sgurram15/fraud-detection.git
+cd fraud-detection
 python -m venv .venv
-.venv\Scripts\activate        # Windows
+.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 ```
 
-Datasets are not committed. Use the Kaggle CLI (configured via `kaggle.json`)
-to download a card fraud dataset into `data/raw/`.
+**macOS / Linux (bash):**
+```bash
+git clone https://github.com/sgurram15/fraud-detection.git
+cd fraud-detection
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
 
-## Regulatory context
+Kaggle credentials: place `kaggle.json` at `~/.kaggle/kaggle.json`
+(Windows: `C:\Users\<you>\.kaggle\kaggle.json`). **Never commit it** — it is
+gitignored. Accept the competition rules at
+https://www.kaggle.com/competitions/ieee-fraud-detection/rules once.
 
-As a UK PSP fraud control, the model is expected to align with FCA
-expectations around governance, explainability, and ongoing monitoring. See
-`docs/` for the architecture overview and the FCA model card capturing intended
-use, data, performance, limitations, and monitoring approach.
+> Note: `numpy<2` is pinned in `requirements.txt`. The scientific stack
+> (pandas/matplotlib/numexpr) is NumPy-1.x ABI; allowing NumPy 2.x (e.g. via
+> an unpinned `shap` install) corrupts the environment.
 
-## Status
+## 4. AWS setup
 
-Proof of concept — under active development. Not for production use.
+Cloud deployment is **optional** and **incurs cost**. Follow
+**`docs/AWS_SETUP.md`** step by step. It contains four human STOP points
+(root MFA, IAM user, billing alerts, GitHub remote) that must be completed
+before the automated AWS scripts (`scripts/aws/`) can run. All resources are
+created in `eu-west-2` and tagged `Project=fraud-detection-poc`.
+
+## 5. Running the pipeline (in order)
+
+```bash
+# 1. Download data (Kaggle competition; ~1.3 GB, gitignored)
+python data/download_data.py
+
+# 2. Explore / sanity-check
+python data/explore_data.py
+
+# 3. Feature engineering (leakage-safe; caches to data/processed/)
+python src/features/build_features.py
+
+# 4. Class-imbalance datasets (SMOTE / undersample / combined)
+python src/features/handle_imbalance.py
+
+# 5. Train baseline XGBoost (defaults to a 100k sample; FRAUD_SAMPLE_N=all for full)
+python src/models/train_baseline.py
+
+# 6. Hyperparameter tuning (SEARCH_MODE="random" local; "full_grid" = SageMaker)
+python src/models/tune_model.py
+
+# 7. Pre-production validation gate
+python src/models/validate_model.py
+
+# 8. Serving API (FastAPI)
+uvicorn src.api.main:app --reload     # (api layer is scaffolding)
+
+# 9. Streaming simulation (Kafka stand-in)
+python -m src.streaming.simulate      # (streaming layer is scaffolding)
+```
+
+Feature validation plots/report:
+`python src/features/validate_features.py`.
+
+## 6. Running the tests
+
+```bash
+python tests/test_feature_store.py
+```
+
+(Standalone smoke/acceptance tests print PASS/FAIL and exit non-zero on
+failure. `pytest` can also be used if installed.)
+
+## 7. Known limitations and model card
+
+The **FCA model card is `docs/model_card.md`** — read it before drawing any
+conclusions. Headline limitations: no shipping-address feature (IEEE-CIS has
+none), `TransactionDT` is relative not wall-clock, `card_uid` is a composite
+approximation (no true account key), local runs use a sample (host RAM can't
+hold the full 590k + SMOTE), and several layers (`api/`, `streaming/`) are
+scaffolding. Cost assumptions in the operating-point analysis (£125 FN /
+£25 FP) are illustrative and must be recalibrated with the client's real
+fraud-loss data before production.
+
+## 8. Cost warning
+
+| Step | Cost |
+|---|---|
+| Local pipeline (sections 5–6) | £0 (your machine) |
+| Kaggle data download | £0 |
+| `scripts/aws/setup_s3.py` | £0 to create; ~£0.023/GB/month to store |
+| `scripts/aws/upload_data.py` | S3 storage of ~1.3 GB ≈ £0.03/month + transfer |
+| `scripts/aws/launch_ec2.py` (t3.large) | **~£0.08/hour while running** |
+| SageMaker training/tuning (Version 2) | per-instance, per-hour — see AWS_SETUP.md |
+
+**EC2 and SageMaker bill by the hour. Always run `scripts/aws/stop_ec2.py`
+when done — never leave an instance running overnight.** Billing alerts at
+£10 and £25/month are a required setup step (STOP 3).
+
+---
+
+PoC — not for production use. See `docs/model_card.md` and
+`docs/production_architecture.md`.
