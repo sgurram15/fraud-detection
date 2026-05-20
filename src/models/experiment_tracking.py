@@ -74,9 +74,15 @@ def _system_info() -> dict[str, str]:
     }
     for lib in _TRACKED_LIBS:
         try:
-            info[f"lib.{lib}"] = version(lib)
+            v = version(lib)
+            info[f"lib.{lib}"] = v if v else "unknown"
         except PackageNotFoundError:
             info[f"lib.{lib}"] = "not-installed"
+        except Exception:
+            # Some installs (seen with pandas 3.0.3 here) leave dist-info
+            # without a Version field, causing importlib_metadata to raise
+            # KeyError. Tracking must never block training.
+            info[f"lib.{lib}"] = "metadata-broken"
     return info
 
 
