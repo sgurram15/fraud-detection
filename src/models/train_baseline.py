@@ -60,14 +60,24 @@ from xgboost import XGBClassifier
 _ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_ROOT))
 
+from src.config import USE_S3, data_path, model_path
 from src.features.build_features import build_features
 from src.features.handle_imbalance import prepare_train_test_split
 from src.models.experiment_tracking import log_results, start_run
 
 logger = logging.getLogger(__name__)
 
-_RAW_DIR = _ROOT / "data" / "raw"
-_MODEL_DIR = _ROOT / "src" / "models" / "saved"
+# A8: data/model roots come from src/config so USE_S3 / S3_BUCKET flip
+# everything centrally. load_data() and joblib.dump below still rely on
+# local-FS semantics (Path.glob, write_bytes), so USE_S3=true is refused
+# here -- S3 read/write wiring is a separate follow-up (needs s3fs/boto3).
+if USE_S3:
+    raise NotImplementedError(
+        "train_baseline.py does not yet handle USE_S3=true: load_data and "
+        "joblib persistence are local-FS only. Run with USE_S3=false."
+    )
+_RAW_DIR = _ROOT / data_path()
+_MODEL_DIR = _ROOT / model_path()
 _PERF_DIR = _ROOT / "docs" / "model_performance"
 _MODEL_PATH = _MODEL_DIR / "baseline_xgboost.pkl"
 _METRICS_PATH = _PERF_DIR / "baseline_metrics.json"
