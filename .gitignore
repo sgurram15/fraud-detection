@@ -31,3 +31,6 @@ __pycache__/
 .ipynb_checkpoints/
 .venv/
 venv/
+
+# --- Local IDE / agent permission config ---
+.claude/settings.local.json
