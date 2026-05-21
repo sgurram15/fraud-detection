@@ -139,3 +139,7 @@ consideration.
 - Monitoring: data/model drift via Evidently (`src/monitoring/`).
 - To be completed: performance metrics, threshold/operating point, subgroup
   analysis, validation strategy (time-based split to avoid leakage).
+
+## Model Selection
+
+Production model selected: baseline — tuned does not beat baseline by the required 1pp recall at 95% precision — validated on identical test set, 2026-05-21

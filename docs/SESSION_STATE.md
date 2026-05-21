@@ -207,9 +207,9 @@ python tests/test_feature_store.py
 |---|---|---|
 | Rewrite `f2ccb92` to drop the ~900 KB of generated PNGs/JSON | Bloat in initial commit; needs `git filter-repo` (or interactive rebase + amend) + **force-push to origin/main**. Coordinate before doing it. | Low mechanically, high in coordination |
 | Untrack `.claude/settings.local.json` | Currently committed; local IDE config, usually gitignored | Trivial |
-| A8 cross-file path migration | `src/config.py` exists; pipeline files still use hardcoded local paths | Med — file-by-file with smoke re-runs |
+| ~~A8 cross-file path migration~~ | ✅ DONE 2026-05-21 — all `src/` files now route data/model roots through `src/config` helpers (`data_path`/`processed_path`/`model_path`); `USE_S3=true` cleanly refused at every local-FS entry point. S3 read/write wiring (s3fs/boto3) is the remaining follow-up. | — |
 | Implement `src/api/`, `src/streaming/`, `src/monitoring/` | Scaffolding only today | Multi-session |
-| Validate the baseline model (not just the tuned one) | `validate_model.py` currently points at `tuned_xgboost.pkl`; consider parameterising or running a baseline pass too | Low |
+| ~~Validate the baseline model (not just the tuned one)~~ | ✅ DONE 2026-05-21 — `src/models/compare_models.py` does a controlled baseline-vs-tuned comparison on an identical held-out test set. **Baseline wins** (recall@P95 0.3828 vs 0.3535; AUC 0.9158 vs 0.9036). `model_comparison.json` + model_card "Model Selection" + MLflow "model-selection-decision". Caveat: comparison biased toward tuned (training-set overlap), so the baseline verdict is robust. | — |
 
 ## 9. AWS Phase A — status
 
