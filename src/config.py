@@ -40,6 +40,13 @@ def data_path(*parts: str) -> str:
     return base + "/".join(parts) if parts else base
 
 
+def processed_path(*parts: str) -> str:
+    """Resolve a path under the processed-data root (S3 URI or local)."""
+    base = (f"s3://{S3_BUCKET}/data/processed/"
+            if USE_S3 else LOCAL_PROCESSED_PATH)
+    return base + "/".join(parts) if parts else base
+
+
 def model_path(*parts: str) -> str:
     """Resolve a path under the model root (S3 URI or local)."""
     return MODEL_PATH + "/".join(parts) if parts else MODEL_PATH

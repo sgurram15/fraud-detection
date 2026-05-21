@@ -36,13 +36,16 @@ import seaborn as sns
 from scipy import stats
 from sklearn.metrics import roc_auc_score
 
+from src.config import data_path
 from src.features.handle_imbalance import load_features
 
 logger = logging.getLogger(__name__)
 
 TARGET = "isFraud"
 _ROOT = Path(__file__).resolve().parents[2]
-_RAW_DIR = _ROOT / "data" / "raw"
+# A8: raw root from src/config. Reads go through load_features(), which
+# refuses USE_S3=true (local-FS only); _PLOT_DIR is an audit artifact, local.
+_RAW_DIR = _ROOT / data_path()
 _PLOT_DIR = _ROOT / "docs" / "feature_validation"
 
 ALPHA = 0.05

@@ -49,8 +49,13 @@ from src.features.build_features import (
 
 logger = logging.getLogger(__name__)
 
+from src.config import USE_S3, data_path, processed_path
+
 _ROOT = Path(__file__).resolve().parents[2]
-_STORE_DIR = _ROOT / "data" / "processed" / "feature_store"
+# A8: store/raw roots come from src/config. save()/load() and the __main__
+# demo are local-FS only (joblib + Path.glob), so USE_S3=true is refused at
+# those entry points; S3 wiring is a separate follow-up.
+_STORE_DIR = _ROOT / processed_path() / "feature_store"
 _FEATURES_PATH = _STORE_DIR / "training_features.parquet"
 _STATE_PATH = _STORE_DIR / "online_state.pkl"
 
@@ -285,8 +290,13 @@ if __name__ == "__main__":
     logging.basicConfig(
         level=logging.INFO, format="%(levelname)s %(name)s: %(message)s"
     )
+    if USE_S3:
+        raise NotImplementedError(
+            "feature_store.py demo reads raw CSVs and persists state via "
+            "joblib (local-FS only); run with USE_S3=false."
+        )
     txn_csv = glob.glob(
-        str(_ROOT / "data" / "raw" / "**" / "train_transaction.csv"),
+        str(_ROOT / data_path() / "**" / "train_transaction.csv"),
         recursive=True,
     )
     if not txn_csv:

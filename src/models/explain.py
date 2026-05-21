@@ -35,6 +35,9 @@ import shap
 _ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_ROOT))
 
+from src.config import USE_S3
+from src.config import model_path as _model_root
+
 logger = logging.getLogger(__name__)
 
 _PERF_DIR = _ROOT / "docs" / "model_performance"
@@ -347,8 +350,14 @@ def main() -> None:
 
     import joblib
 
-    tuned = _ROOT / "src" / "models" / "saved" / "tuned_xgboost.pkl"
-    baseline = _ROOT / "src" / "models" / "saved" / "baseline_xgboost.pkl"
+    if USE_S3:
+        raise NotImplementedError(
+            "explain.py loads a saved model via joblib (local-FS only); run "
+            "with USE_S3=false. The library functions are model-object-driven "
+            "and path-agnostic."
+        )
+    tuned = _ROOT / _model_root() / "tuned_xgboost.pkl"
+    baseline = _ROOT / _model_root() / "baseline_xgboost.pkl"
     if tuned.exists():
         model_path = tuned
     elif baseline.exists():

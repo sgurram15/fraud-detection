@@ -302,7 +302,17 @@ if __name__ == "__main__":
     logging.basicConfig(
         level=logging.INFO, format="%(levelname)s %(name)s: %(message)s"
     )
-    raw = Path(__file__).resolve().parents[2] / "data" / "raw"
+    _root = Path(__file__).resolve().parents[2]
+    sys.path.insert(0, str(_root))
+    from src.config import USE_S3, data_path
+
+    if USE_S3:
+        raise NotImplementedError(
+            "build_features.py demo reads raw CSVs via Path.glob (local-FS "
+            "only); run with USE_S3=false. The build_features() function "
+            "itself is path-agnostic and works on any passed dataframe."
+        )
+    raw = _root / data_path()
     matches = sorted(raw.glob("**/train_transaction.csv"))
     if not matches:
         print(f"train_transaction.csv not found under {raw}", file=sys.stderr)

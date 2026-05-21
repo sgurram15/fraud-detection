@@ -37,8 +37,16 @@ RANDOM_STATE = 42
 TARGET = "isFraud"
 
 _ROOT = Path(__file__).resolve().parents[2]
-_RAW_DIR = _ROOT / "data" / "raw"
-_PROC_DIR = _ROOT / "data" / "processed"
+sys.path.insert(0, str(_ROOT))
+
+from src.config import USE_S3, data_path, processed_path
+
+# A8: data/processed + data/raw roots come from src/config. This module reads
+# raw CSVs via Path.glob and persists parquet locally, so USE_S3=true is
+# refused at the local-FS entry points (see load_features / __main__);
+# S3 read/write is a separate follow-up (needs s3fs/boto3).
+_RAW_DIR = _ROOT / data_path()
+_PROC_DIR = _ROOT / processed_path()
 _FEATURES_PATH = _PROC_DIR / "features.parquet"
 
 # Columns that must never be model inputs (ids / target / leakage-prone keys).
@@ -77,6 +85,12 @@ def load_features() -> pd.DataFrame:
     features from the raw IEEE-CIS files (transaction + identity) via
     ``build_features`` and caches the result for reuse.
     """
+    if USE_S3:
+        raise NotImplementedError(
+            "handle_imbalance.load_features() is local-FS only (Path.glob + "
+            "parquet cache); run with USE_S3=false. S3 read/write is a "
+            "separate follow-up (needs s3fs/boto3)."
+        )
     if _FEATURES_PATH.exists():
         logger.info("Loading cached features from %s", _FEATURES_PATH)
         return _read_table(_FEATURES_PATH)

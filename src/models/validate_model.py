@@ -40,13 +40,16 @@ from xgboost import XGBClassifier
 _ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_ROOT))
 
+from src.config import model_path
 from src.features.build_features import build_features
 from src.features.handle_imbalance import _xy
 from src.models.train_baseline import DEFAULT_SAMPLE_N, RANDOM_STATE, load_data
 
 logger = logging.getLogger(__name__)
 
-_MODEL_DIR = _ROOT / "src" / "models" / "saved"
+# A8: model root from src/config (USE_S3 refused transitively via the
+# train_baseline import, which is local-FS only for load/joblib).
+_MODEL_DIR = _ROOT / model_path()
 _TUNED_PATH = _MODEL_DIR / "tuned_xgboost.pkl"
 _BASELINE_PATH = _MODEL_DIR / "baseline_xgboost.pkl"
 _PERF_DIR = _ROOT / "docs" / "model_performance"
