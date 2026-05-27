@@ -13,6 +13,9 @@ data/raw/*.zip
 data/raw/**/*.zip
 data/processed/
 
+# --- Streaming audit trail (runtime output) ---
+data/audit/
+
 # --- Model artifacts ---
 *.pkl
 
@@ -23,6 +26,7 @@ mlflow.db
 # --- Generated outputs (plots, metrics, reports) — not version controlled ---
 docs/feature_validation/
 docs/model_performance/
+docs/monitoring/
 
 # --- Python ---
 __pycache__/

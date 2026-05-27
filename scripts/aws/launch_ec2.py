@@ -1,4 +1,4 @@
-"""A6 — Launch a fully-provisioned t3.large EC2 training instance.
+"""A6 — Launch a fully-provisioned r5.xlarge (32 GB) EC2 training instance.
 
 Order of operations (each step idempotent — safe to re-run):
   1. Load creds + config from .env (python-dotenv).
@@ -8,7 +8,7 @@ Order of operations (each step idempotent — safe to re-run):
   4. Create/reuse IAM role + instance profile (fraud-detection-ec2-role /
      -profile) granting the instance S3 + SageMaker + CloudWatch agent access.
   5. Resolve the latest AL2023 AMI (SSM parameter, DescribeImages fallback).
-  6. Launch ONE t3.large with the key/SG/profile + bootstrap user-data.
+  6. Launch ONE r5.xlarge with the key/SG/profile + bootstrap user-data.
   7. Wait for running (progress every 15s).
   8. Record EC2_* values back into .env.
   9. Print a summary.
@@ -42,8 +42,8 @@ except ImportError:
           "    pip install python-dotenv", file=sys.stderr)
     sys.exit(1)
 
-INSTANCE_TYPE = "t3.large"  # 2 vCPU, 8 GB RAM
-HOURLY_GBP = 0.08
+INSTANCE_TYPE = "r5.xlarge"  # 4 vCPU, 32 GB RAM (full IEEE-CIS + SMOTE fits)
+HOURLY_GBP = 0.24  # r5.xlarge eu-west-2 on-demand, approx
 SG_NAME = "fraud-detection-sg"
 KEY_NAME = "fraud-detection-key"
 KEY_PATH = Path.home() / ".ssh" / f"{KEY_NAME}.pem"

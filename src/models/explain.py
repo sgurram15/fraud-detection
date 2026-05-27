@@ -265,12 +265,24 @@ def _confidence(prob: float, threshold: float) -> str:
     return "LOW"
 
 
-def generate_fca_explanation(transaction: dict, prediction, shap_reasons) -> dict:
+# Production model identity — used when a caller does not supply its own. The
+# live serving path (src/api/main.py) and the CLI below both pass the actual
+# model they loaded, so the audit record never mislabels which model decided.
+DEFAULT_MODEL_META = {
+    "name": "xgboost-baseline-v1",
+    "artifact": "src/models/saved/baseline_xgboost.pkl",
+}
+
+
+def generate_fca_explanation(transaction: dict, prediction, shap_reasons,
+                             model_meta: dict | None = None) -> dict:
     """Structured audit record for one automated decision.
 
     ``prediction`` may be a float probability or a dict with any of
-    ``fraud_probability``, ``threshold``, ``decision``. The output is
-    JSON-serialisable (numpy types coerced to Python).
+    ``fraud_probability``, ``threshold``, ``decision``. ``model_meta`` records
+    which model produced the decision (name + artifact); it defaults to the
+    production model. The output is JSON-serialisable (numpy types coerced to
+    Python).
     """
     if isinstance(prediction, dict):
         prob = float(prediction.get("fraud_probability",
@@ -300,10 +312,7 @@ def generate_fca_explanation(transaction: dict, prediction, shap_reasons) -> dic
         "schema_version": 1,
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "transaction_id": txn_id,
-        "model": {
-            "name": "tuned_xgboost",
-            "artifact": "src/models/saved/tuned_xgboost.pkl",
-        },
+        "model": dict(model_meta) if model_meta else dict(DEFAULT_MODEL_META),
         "fraud_probability": prob,
         "threshold": threshold,
         "decision": decision,
@@ -392,6 +401,8 @@ def main() -> None:
         prediction={"fraud_probability": float(proba[idx]),
                     "threshold": 0.5},
         shap_reasons=reasons,
+        model_meta={"name": model_path.stem,
+                    "artifact": f"src/models/saved/{model_path.name}"},
     )
     _EXAMPLE_AUDIT.write_text(json.dumps(fca, indent=2, default=str))
     logger.info("Saved example FCA audit record -> %s",

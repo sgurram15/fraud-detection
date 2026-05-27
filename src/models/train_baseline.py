@@ -568,6 +568,16 @@ def _print_summary(metrics: dict, fraud_rate: float,
           f"costs: FN=£{COST_FN_DEFAULT:.0f}, FP=£{COST_FP_DEFAULT:.0f} | "
           f"test fraud rate {fraud_rate:.3%}")
     print(_op_table(operating_points))
+
+    print("\n  RECALL BY OPERATING POINT (fraud caught on the test set):")
+    for label, key in (("Cost-optimal", "cost_optimal"),
+                       ("95% precision", "high_precision_95"),
+                       ("Max recall (P>0.50)", "max_recall_p50")):
+        o = operating_points[key]
+        print(f"    {label:<20} thr={o['threshold']:.2f}  "
+              f"recall={o['recall']*100:.2f}%  "
+              f"(precision={o['precision']*100:.1f}%)")
+
     co = operating_points["cost_optimal"]
     if co["commercially_acceptable"]:
         print(f"  Recommended default: Cost-optimal (thr="

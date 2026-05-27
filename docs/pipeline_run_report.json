@@ -1,0 +1,86 @@
+{
+  "limit": 30,
+  "target_tps": 10,
+  "elapsed_seconds": 3.3,
+  "producer": {
+    "published": 30,
+    "errors": 0,
+    "elapsed_seconds": 3.24,
+    "tps": 9.25
+  },
+  "enricher": {
+    "enriched": 30,
+    "avg_enrich_ms": 0.105
+  },
+  "scorer": {
+    "scored": 30,
+    "decisions": {
+      "REVIEW": 27,
+      "APPROVE": 3
+    }
+  },
+  "agent": {
+    "agent_decisions": 0
+  },
+  "audit_summary": {
+    "total_decisions": 30,
+    "by_decision_type": {
+      "REVIEW": 27,
+      "APPROVE": 3
+    },
+    "by_confidence": {},
+    "fraud_rate": 1.0
+  },
+  "decisions": {
+    "APPROVE": 3,
+    "REVIEW": 27,
+    "HOLD": 0
+  },
+  "agent_decisions": {
+    "HOLD_AND_STEP_UP": 0,
+    "BLOCK": 0,
+    "MONITOR": 0
+  },
+  "avg_latency_ms": 29.802,
+  "terminal_counts": {
+    "approved": 3,
+    "review": 27,
+    "flagged": 0
+  },
+  "bus_stats": {
+    "elapsed_seconds": 3.3,
+    "throughput_msg_per_s": 36.31,
+    "topics": {
+      "transactions_inbound": {
+        "published": 30,
+        "consumed": 30,
+        "pending": 0
+      },
+      "transactions_enriched": {
+        "published": 30,
+        "consumed": 30,
+        "pending": 0
+      },
+      "transactions_scored": {
+        "published": 27,
+        "consumed": 0,
+        "pending": 27
+      },
+      "transactions_flagged": {
+        "published": 0,
+        "consumed": 0,
+        "pending": 0
+      },
+      "transactions_approved": {
+        "published": 3,
+        "consumed": 0,
+        "pending": 3
+      },
+      "audit_log": {
+        "published": 30,
+        "consumed": 30,
+        "pending": 0
+      }
+    }
+  }
+}

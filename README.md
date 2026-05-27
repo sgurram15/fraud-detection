@@ -20,6 +20,20 @@ legitimate transactions blocked), and known limitations are recorded rather
 than hidden. See `docs/model_card.md` for the FCA-aligned model card and
 `docs/data_dictionary.md` for the data.
 
+## Quick start (demo)
+
+Once set up (section 3) with a trained model and feature store in place:
+
+```bash
+python scripts/run_demo.py          # full narrated demo (~60s pipeline step)
+python scripts/run_demo.py --quick  # short version
+```
+
+The demo runs six steps end-to-end with no AWS: system check, baseline-vs-tuned
+comparison, five live-scored transactions with SHAP reason codes, the streaming
+pipeline at 10 TPS with a live dashboard, a financial-impact projection, and an
+ASCII summary of the production architecture.
+
 ## 2. Architecture overview
 
 Two versions are described in detail in **`docs/production_architecture.md`**:
@@ -139,6 +153,51 @@ fraud-loss data before production.
 **EC2 and SageMaker bill by the hour. Always run `scripts/aws/stop_ec2.py`
 when done — never leave an instance running overnight.** Billing alerts at
 £10 and £25/month are a required setup step (STOP 3).
+
+## 9. Performance
+
+Production model: **XGBoost baseline** (`baseline_xgboost.pkl`,
+`xgboost-baseline-v1`), selected over the tuned variant on an identical test
+set (`docs/model_performance/model_comparison.json`). Metrics on the full
+held-out test set at the deployed cost-optimal operating point (threshold
+**0.19**):
+
+| Metric | Value |
+|---|---|
+| AUC-ROC | 0.923 |
+| AUC-PR | 0.647 |
+| Recall | 0.678 |
+| Precision | 0.426 |
+| False-positive rate | 0.033 (within the ≤5% commercial constraint) |
+
+The operating point is a business decision: the 0.19 threshold minimises
+expected fraud loss under the illustrative £125-FN / £25-FP cost model while
+keeping the false-positive rate well under the ~5% cap. Full numbers and the
+threshold analysis are in `docs/model_performance/` and `docs/model_card.md`.
+
+Serving latency is well under the 100ms target (≈30ms end-to-end per request,
+measured by `tests/test_api.py`).
+
+## 10. FCA compliance
+
+Fraud screening at a PSP is a regulated control. This system is built to the
+FCA expectations that shaped it:
+
+- **Explainability (Consumer Duty, UK GDPR Art. 22):** every decision carries
+  SHAP reason codes and a structured `fca_explanation` audit record naming the
+  model, threshold, probability, and top contributing features.
+- **Immutable audit trail:** every scored transaction is written to an audit
+  record (local `data/audit/`; CloudTrail/S3 in production).
+- **No data leakage:** features are prior-only (history strictly before the
+  transaction); the model was validated on a leakage-free held-out set.
+- **Documented operating point:** the threshold and its commercial constraint
+  are recorded, not implicit.
+- **Model monitoring:** `src/monitoring/` runs Evidently drift detection and a
+  performance tracker, with a HEALTHY / WARNING / RETRAINING_REQUIRED verdict.
+- **Recorded limitations:** known gaps (no shipping-address feature, relative
+  `TransactionDT`, composite `card_uid`, illustrative cost assumptions) are in
+  `docs/model_card.md` rather than hidden.
+- **Data residency:** all AWS resources are in `eu-west-2` (London).
 
 ---
 

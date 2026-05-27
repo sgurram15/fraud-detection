@@ -193,6 +193,22 @@ processing within a single, well-understood legal and supervisory perimeter,
 simplifying the firm's outsourcing risk assessment and its data-protection
 position.
 
+### CloudWatch monitoring + EventBridge retraining
+The model is monitored continuously rather than deployed and forgotten. Custom
+CloudWatch metrics (transactions processed, fraud rate, false-positive rate,
+end-to-end latency, agent decision counts, estimated daily fraud saving) are
+published from the pipeline, with alarms on the operationally meaningful
+conditions: false-positive rate above the commercial cap, latency breach, a
+fraud rate flat-lining at zero (a likely model/feature failure), and abnormal
+agent BLOCK volume. A weekly **EventBridge** schedule triggers the monitoring
+job (`src/monitoring/run_monitoring.py` in the PoC) — Evidently data-drift
+detection plus a performance tracker over confirmed outcomes — which emits a
+HEALTHY / WARNING / RETRAINING_REQUIRED verdict and, on RETRAINING_REQUIRED,
+kicks off a SageMaker retraining pipeline for human-reviewed promotion. **Why
+it matters:** model governance requires that a regulated control's performance
+is evidenced over time and that degradation (drift, rising false negatives) is
+detected and acted on, not discovered after customer harm.
+
 ---
 
 ## How Version 1 maps to Version 2
@@ -206,6 +222,7 @@ position.
 | Experiment lineage | Local MLflow | SageMaker registry + MLflow |
 | Decisioning | API returns score/decision | Bedrock agent (human-overseen) |
 | Audit/evidence | Logs / MLflow runs | CloudTrail immutable trail |
+| Monitoring/retrain | `run_monitoring.py` (Evidently) | CloudWatch + EventBridge weekly retrain |
 | Resilience | Single local process | Multi-region active-active |
 | Data location | Local machine | AWS eu-west-2 only |
 
