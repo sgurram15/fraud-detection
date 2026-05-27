@@ -15,6 +15,7 @@ where decision is one of HOLD_AND_STEP_UP | BLOCK | MONITOR.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sys
@@ -34,6 +35,15 @@ from src.streaming.stream_bus import (
 logger = logging.getLogger("agent")
 
 _NEW_ACCOUNT_DAYS = 30  # card age below this counts as a "new account"
+
+# Bedrock config (C6.2). Region eu-west-2 (FCA residency); the EU cross-region
+# inference profile is the default. Override with $BEDROCK_MODEL_ID.
+_BEDROCK_MODEL_ID = os.getenv(
+    "BEDROCK_MODEL_ID", "eu.anthropic.claude-sonnet-4-20250514-v1:0")
+_BEDROCK_REGION = os.getenv("AWS_DEFAULT_REGION", "eu-west-2")
+_BEDROCK_MAX_RETRIES = 5
+_VALID_DECISIONS = {"HOLD_AND_STEP_UP", "BLOCK", "MONITOR"}
+_VALID_CONFIDENCE = {"HIGH", "MEDIUM", "LOW"}
 
 
 def _is_new_account(event: dict) -> bool:
@@ -94,14 +104,92 @@ def local_reason(event: dict) -> dict:
     }
 
 
-def bedrock_reason(event: dict) -> dict:
-    """Amazon Bedrock Claude Sonnet path. Fully wired in C6.2 — until then it
-    raises so callers fall back to :func:`local_reason` rather than silently
-    returning a fake verdict."""
-    raise NotImplementedError(
-        "Bedrock agent path is implemented in Phase C6.2. Unset "
-        "AWS_BEDROCK_ENABLED to use the local rule-based reasoner."
+def build_prompt(event: dict) -> str:
+    """Compose the fraud-reasoning prompt for one flagged transaction."""
+    sr = event.get("score_result", {})
+    reasons = sr.get("reasons", [])[:5]
+    return (
+        "You are a fraud analyst for a UK Payment Service Provider, operating "
+        "under FCA Consumer Duty and UK GDPR Art. 22 (right to an explanation "
+        "of automated decisions). A transaction has been flagged by the "
+        "scoring model. Decide the action.\n\n"
+        f"Transaction: id={event.get('transaction_id')}, "
+        f"amount=£{event.get('amount')}, device={event.get('device_type')}, "
+        f"hour={event.get('hour_of_day')}, card_age_days="
+        f"{event.get('card_age_days')}, velocity_1h="
+        f"{event.get('tx_velocity_1h')}, velocity_24h="
+        f"{event.get('tx_velocity_24h')}.\n"
+        f"Model fraud probability: {sr.get('fraud_probability')} "
+        f"(threshold {sr.get('threshold_used')}).\n"
+        f"Top model reason codes: {reasons}\n\n"
+        "Respond with ONLY a JSON object, no prose, with exactly these keys:\n"
+        '{"decision": "HOLD_AND_STEP_UP|BLOCK|MONITOR", '
+        '"confidence": "HIGH|MEDIUM|LOW", '
+        '"reasoning": "plain-English paragraph for the analyst", '
+        '"fca_narrative": "explanation suitable for the FCA audit log", '
+        '"alert_fraud_team": true|false, "draft_sar": true|false}'
     )
+
+
+def parse_bedrock_response(text: str) -> dict:
+    """Extract and validate the agent verdict JSON from the model's text.
+    Raises ValueError if it is missing required keys or invalid values."""
+    start, end = text.find("{"), text.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        raise ValueError("no JSON object in Bedrock response")
+    verdict = json.loads(text[start:end + 1])
+    if verdict.get("decision") not in _VALID_DECISIONS:
+        raise ValueError(f"invalid decision: {verdict.get('decision')!r}")
+    if verdict.get("confidence") not in _VALID_CONFIDENCE:
+        raise ValueError(f"invalid confidence: {verdict.get('confidence')!r}")
+    for key in ("reasoning", "fca_narrative"):
+        if not str(verdict.get(key, "")).strip():
+            raise ValueError(f"empty {key}")
+    verdict.setdefault("alert_fraud_team", verdict["decision"] != "MONITOR")
+    verdict.setdefault("draft_sar", verdict["decision"] == "BLOCK")
+    verdict["agent_mode"] = "bedrock"
+    return verdict
+
+
+def bedrock_reason(event: dict) -> dict:
+    """Amazon Bedrock Claude Sonnet path (C6.2): boto3 bedrock-runtime Converse
+    API with exponential backoff on throttling and per-call token logging."""
+    import boto3
+    from botocore.exceptions import ClientError
+
+    client = boto3.client("bedrock-runtime", region_name=_BEDROCK_REGION)
+    messages = [{"role": "user",
+                 "content": [{"text": build_prompt(event)}]}]
+    delay = 1.0
+    last_exc: Exception | None = None
+    for attempt in range(1, _BEDROCK_MAX_RETRIES + 1):
+        try:
+            resp = client.converse(
+                modelId=_BEDROCK_MODEL_ID,
+                messages=messages,
+                inferenceConfig={"maxTokens": 512, "temperature": 0.0},
+            )
+            text = resp["output"]["message"]["content"][0]["text"]
+            usage = resp.get("usage", {})
+            logger.info("Bedrock %s tokens in=%s out=%s total=%s (txn=%s)",
+                        _BEDROCK_MODEL_ID, usage.get("inputTokens"),
+                        usage.get("outputTokens"), usage.get("totalTokens"),
+                        event.get("transaction_id"))
+            return parse_bedrock_response(text)
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code", "")
+            last_exc = exc
+            if code in ("ThrottlingException", "TooManyRequestsException",
+                        "ServiceUnavailableException") and \
+                    attempt < _BEDROCK_MAX_RETRIES:
+                logger.warning("Bedrock throttled (%s); retry %d in %.1fs",
+                               code, attempt, delay)
+                time.sleep(delay)
+                delay *= 2  # exponential backoff
+                continue
+            raise
+    raise RuntimeError(f"Bedrock failed after {_BEDROCK_MAX_RETRIES} attempts: "
+                       f"{last_exc}")
 
 
 def reason(event: dict) -> dict:
