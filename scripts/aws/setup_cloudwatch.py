@@ -22,7 +22,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from scripts.aws._common import REGION, confirm, get_boto3, get_env
+from scripts.aws._common import (
+    REGION,
+    confirm,
+    get_boto3,
+    get_env,
+    load_dotenv_into_environ,
+)
+
+load_dotenv_into_environ()  # make .env AWS creds available to boto3
 
 NAMESPACE = "FraudDetection/Pipeline"
 DASHBOARD_NAME = "FraudDetectionPOC"

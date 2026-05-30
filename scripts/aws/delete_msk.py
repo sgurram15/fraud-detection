@@ -8,18 +8,31 @@ always run this when done.
 
 from __future__ import annotations
 
+import argparse
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from scripts.aws._common import REGION, confirm, get_boto3, get_env
+from scripts.aws._common import (
+    REGION,
+    confirm,
+    get_boto3,
+    get_env,
+    load_dotenv_into_environ,
+)
+
+load_dotenv_into_environ()  # make .env AWS creds available to boto3
 
 _HOURLY_GBP = 0.14
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--yes", action="store_true")
+    args = parser.parse_args()
+
     arn = get_env("MSK_CLUSTER_ARN")
     if not arn:
         print("MSK_CLUSTER_ARN not set in .env — nothing to delete.")
@@ -42,7 +55,7 @@ def main() -> int:
     except Exception as exc:  # noqa: BLE001
         print(f"Could not describe cluster: {exc}")
 
-    if not confirm("Delete MSK cluster?"):
+    if not args.yes and not confirm("Delete MSK cluster?"):
         print("Aborted — cluster left running (still billing).")
         return 0
 

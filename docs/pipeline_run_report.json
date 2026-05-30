@@ -1,16 +1,16 @@
 {
   "limit": 30,
   "target_tps": 10,
-  "elapsed_seconds": 3.3,
+  "elapsed_seconds": 3.35,
   "producer": {
     "published": 30,
     "errors": 0,
-    "elapsed_seconds": 3.24,
-    "tps": 9.25
+    "elapsed_seconds": 3.28,
+    "tps": 9.16
   },
   "enricher": {
     "enriched": 30,
-    "avg_enrich_ms": 0.105
+    "avg_enrich_ms": 0.113
   },
   "scorer": {
     "scored": 30,
@@ -41,15 +41,15 @@
     "BLOCK": 0,
     "MONITOR": 0
   },
-  "avg_latency_ms": 29.802,
+  "avg_latency_ms": 29.134,
   "terminal_counts": {
     "approved": 3,
     "review": 27,
     "flagged": 0
   },
   "bus_stats": {
-    "elapsed_seconds": 3.3,
-    "throughput_msg_per_s": 36.31,
+    "elapsed_seconds": 3.35,
+    "throughput_msg_per_s": 35.87,
     "topics": {
       "transactions_inbound": {
         "published": 30,

@@ -9,15 +9,28 @@ Reads SAGEMAKER_ENDPOINT from .env. Asks for confirmation before deleting.
 
 from __future__ import annotations
 
+import argparse
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from scripts.aws._common import REGION, confirm, get_boto3, get_env
+from scripts.aws._common import (
+    REGION,
+    confirm,
+    get_boto3,
+    get_env,
+    load_dotenv_into_environ,
+)
+
+load_dotenv_into_environ()  # make .env AWS creds available to boto3
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--yes", action="store_true")
+    args = parser.parse_args()
+
     endpoint = get_env("SAGEMAKER_ENDPOINT")
     if not endpoint:
         print("SAGEMAKER_ENDPOINT is not set in .env — nothing to delete.")
@@ -37,7 +50,8 @@ def main() -> int:
         print(f"Could not describe endpoint {endpoint}: {exc}")
         config_name = endpoint
 
-    if not confirm(f"Delete endpoint {endpoint} (and its config + model)?"):
+    if not args.yes and not confirm(
+            f"Delete endpoint {endpoint} (and its config + model)?"):
         print("Aborted — endpoint left running (still billing).")
         return 0
 

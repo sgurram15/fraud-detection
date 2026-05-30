@@ -37,9 +37,12 @@ logger = logging.getLogger("agent")
 _NEW_ACCOUNT_DAYS = 30  # card age below this counts as a "new account"
 
 # Bedrock config (C6.2). Region eu-west-2 (FCA residency); the EU cross-region
-# inference profile is the default. Override with $BEDROCK_MODEL_ID.
+# inference profile is the default (Claude 4.x models are profile-only — the
+# bare model id is not on-demand invocable in eu-west-2). Override with
+# $BEDROCK_MODEL_ID. Verified working: eu.anthropic.claude-sonnet-4-5-...,
+# anthropic.claude-3-7-sonnet-20250219-v1:0.
 _BEDROCK_MODEL_ID = os.getenv(
-    "BEDROCK_MODEL_ID", "eu.anthropic.claude-sonnet-4-20250514-v1:0")
+    "BEDROCK_MODEL_ID", "eu.anthropic.claude-sonnet-4-5-20250929-v1:0")
 _BEDROCK_REGION = os.getenv("AWS_DEFAULT_REGION", "eu-west-2")
 _BEDROCK_MAX_RETRIES = 5
 _VALID_DECISIONS = {"HOLD_AND_STEP_UP", "BLOCK", "MONITOR"}

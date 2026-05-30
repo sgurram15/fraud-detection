@@ -36,7 +36,10 @@ from scripts.aws._common import (
     confirm,
     get_boto3,
     get_env,
+    load_dotenv_into_environ,
 )
+
+load_dotenv_into_environ()  # make .env AWS creds available to boto3
 
 ENDPOINT_NAME = "fraud-scoring-endpoint"
 INSTANCE_TYPE = "ml.m5.large"
