@@ -366,6 +366,32 @@ def score_batch(reqs: list[TransactionRequest]) -> list[FraudScoreResponse]:
 
 
 # --------------------------------------------------------------------------- #
+# GET /sample — return one real IEEE-CIS test row as a TransactionRequest dict
+# (lets the frontend "Load random real txn" button replay real transactions).
+# Reuses the producer's mapping so behaviour stays consistent with streaming.
+# --------------------------------------------------------------------------- #
+_SAMPLE_TXNS: list[dict] | None = None
+
+
+@app.get("/sample")
+def sample() -> dict:
+    global _SAMPLE_TXNS
+    if _SAMPLE_TXNS is None:
+        from src.streaming.transaction_producer import load_transactions
+        try:
+            _SAMPLE_TXNS = load_transactions(limit=1000)
+        except FileNotFoundError as exc:
+            return JSONResponse(  # type: ignore[return-value]
+                status_code=503,
+                content={"error": "no test_transaction.csv available",
+                         "detail": str(exc)},
+            )
+    import random as _random
+    ev = _random.choice(_SAMPLE_TXNS)
+    return {k: v for k, v in ev.items() if k != "_raw"}
+
+
+# --------------------------------------------------------------------------- #
 # C1.5 — GET /health
 # --------------------------------------------------------------------------- #
 @app.get("/health")

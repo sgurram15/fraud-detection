@@ -187,6 +187,7 @@
       </form>
       <div class="sim-row">
         <button class="ghost" id="sim-toggle" onclick="toggleSim()">Start simulation</button>
+        <button class="ghost" onclick="loadRandomReal()" title="Pre-fill the form with a random row from data/raw/test_transaction.csv">Load random real txn</button>
         <span id="sim-status" style="color:var(--muted); font-family:'DM Mono', monospace; font-size: 11px;">idle</span>
       </div>
     </div>
@@ -541,6 +542,37 @@ function stopSim() {
 }
 
 function toggleSim() { simRunning ? stopSim() : startSim(); }
+
+// --- Load one real IEEE-CIS transaction into the form ---
+async function loadRandomReal() {
+  const baseUrl = ENDPOINTS[currentEnv];
+  if (!baseUrl) { renderAPIError(`No URL configured for environment "${currentEnv}".`); return; }
+  try {
+    const resp = await fetch(`${baseUrl}/sample`, { signal: AbortSignal.timeout(5000) });
+    if (!resp.ok) {
+      const body = await resp.json().catch(() => ({}));
+      renderAPIError(`Sample unavailable (HTTP ${resp.status}): ${body.error || resp.statusText}`);
+      return;
+    }
+    const t = await resp.json();
+    document.getElementById('f-txn').value = t.transaction_id;
+    document.getElementById('f-card').value = t.card_id;
+    document.getElementById('f-amount').value = t.amount;
+    document.getElementById('f-device').value = t.device_type;
+    document.getElementById('f-hour').value = t.hour_of_day;
+    document.getElementById('f-dow').value = t.day_of_week;
+    document.getElementById('f-destage').value = t.destination_account_age_days ?? 0;
+    document.getElementById('f-cardage').value = t.card_age_days ?? 0;
+    document.getElementById('f-v1').value = t.tx_velocity_1h ?? 0;
+    document.getElementById('f-v24').value = t.tx_velocity_24h ?? 0;
+    document.getElementById('f-dev').value = t.amt_deviation ?? 1.0;
+    document.getElementById('f-late').checked = !!t.is_late_night;
+    document.getElementById('f-weekend').checked = !!t.is_weekend;
+  } catch (err) {
+    if (err.name === 'TimeoutError') renderAPIError("Sample request timed out");
+    else renderAPIError(`Cannot fetch sample from ${baseUrl}`);
+  }
+}
 
 // --- Bootstrap ---
 document.getElementById('f-txn').value = 'TXN-' + Date.now();
