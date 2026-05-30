@@ -308,6 +308,10 @@ def generate_fca_explanation(transaction: dict, prediction, shap_reasons,
             v = v.item()
         safe_reasons.append({**r, "value": v})
 
+    # Flat feature -> contribution map for frontend bar charts. Same SHAP values
+    # as top_reasons, but indexed by feature name for direct lookup.
+    shap_values = {r["feature"]: float(r["shap_value"]) for r in safe_reasons}
+
     return {
         "schema_version": 1,
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
@@ -319,6 +323,7 @@ def generate_fca_explanation(transaction: dict, prediction, shap_reasons,
         "confidence_level": _confidence(prob, threshold),
         "explanation_method": "SHAP TreeExplainer (tree_path_dependent)",
         "top_reasons": safe_reasons,
+        "shap_values": shap_values,
         "governance": {
             "purpose": "FCA-aligned evidence for an automated payment decision",
             "consumer_duty_review_eligible": decision != "ALLOW",

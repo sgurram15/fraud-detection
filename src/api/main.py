@@ -41,6 +41,7 @@ import pandas as pd
 import shap
 import xgboost as xgb
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -296,6 +297,15 @@ def _score(req: TransactionRequest) -> FraudScoreResponse:
 # App + middleware (C1.7)
 # --------------------------------------------------------------------------- #
 app = FastAPI(title="PSP Fraud Scoring API", version="1.0")
+
+# CORS: open for local-dev / CTO-demo. Restrict origins for production.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.middleware("http")

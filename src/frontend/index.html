@@ -1,0 +1,554 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PSP Fraud Scoring - Live</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0b0e14;
+    --panel: #131720;
+    --panel-2: #1a1f2c;
+    --border: rgba(255,255,255,0.08);
+    --text: #e6e8ee;
+    --muted: #8a93a6;
+    --green: #4ade80;
+    --green-dim: rgba(74,222,128,0.12);
+    --amber: #fbbf24;
+    --amber-dim: rgba(251,191,36,0.12);
+    --red: #ff4d6d;
+    --red-dim: rgba(255,77,109,0.12);
+    --blue: #60a5fa;
+    --blue-dim: rgba(96,165,250,0.12);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text);
+    font-family: 'Inter', system-ui, sans-serif; font-size: 14px; }
+
+  header { display: flex; align-items: center; padding: 14px 22px; gap: 14px;
+    border-bottom: 1px solid var(--border); background: var(--panel); }
+  header h1 { font-size: 16px; font-weight: 600; margin: 0; letter-spacing: 0.2px; }
+  header h1 span { color: var(--muted); font-weight: 400; }
+  .spacer { flex: 1; }
+
+  #status-pill { display: flex; align-items: center; gap: 8px; padding: 6px 12px;
+    background: var(--panel-2); border-radius: 999px; font-size: 12px;
+    font-family: 'DM Mono', monospace; }
+  #status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  #status-dot.live { background: var(--green); animation: pulse 1.6s infinite; }
+  #status-dot.dead { background: var(--red); }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+  #latency-badge { padding: 6px 10px; background: var(--panel-2); border-radius: 6px;
+    font-family: 'DM Mono', monospace; font-size: 11px; color: var(--muted); }
+  #latency-badge.offline { background: var(--red-dim); color: var(--red); }
+
+  .env-toggle { display: flex; background: var(--panel-2); border-radius: 6px; padding: 2px; }
+  .env-toggle button { background: transparent; border: 0; color: var(--muted); padding: 6px 14px;
+    font-size: 12px; font-family: 'DM Mono', monospace; cursor: pointer; border-radius: 5px; }
+  .env-toggle button.active { background: var(--blue-dim); color: var(--blue); }
+
+  #aws-url-input { width: 380px; padding: 6px 10px; background: var(--bg);
+    border: 1px solid var(--border); border-radius: 6px; color: var(--text);
+    font-family: 'DM Mono', monospace; font-size: 11px; display: none; }
+  #aws-url-input.visible { display: block; }
+
+  .kpi-strip { display: grid; grid-template-columns: repeat(6, 1fr); gap: 1px;
+    background: var(--border); border-bottom: 1px solid var(--border); }
+  .kpi { background: var(--panel); padding: 16px 20px; }
+  .kpi-label { color: var(--muted); font-size: 11px; text-transform: uppercase;
+    letter-spacing: 0.6px; margin-bottom: 6px; font-weight: 500; }
+  .kpi-value { font-family: 'DM Mono', monospace; font-size: 22px; font-weight: 500; }
+
+  main { display: grid; grid-template-columns: 380px 1fr; gap: 18px; padding: 18px; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; }
+  .panel h3 { margin: 0; padding: 14px 18px; border-bottom: 1px solid var(--border);
+    font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase;
+    letter-spacing: 0.6px; }
+  .panel-body { padding: 18px; }
+
+  form { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  form .full { grid-column: 1 / -1; }
+  label .lbl { display: block; font-size: 11px; color: var(--muted);
+    margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.4px; }
+  input[type=text], input[type=number], select { width: 100%; padding: 8px 10px;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+    color: var(--text); font-family: 'DM Mono', monospace; font-size: 12px; }
+  input:focus, select:focus { outline: none; border-color: var(--blue); }
+  .checks { display: flex; gap: 18px; margin-top: 4px; font-size: 12px; color: var(--muted); }
+  .checks label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+
+  button.primary { width: 100%; padding: 11px; background: var(--blue);
+    color: #0b0e14; border: 0; border-radius: 6px; cursor: pointer; font-weight: 600;
+    font-size: 13px; }
+  button.primary:hover { background: #7cb8fb; }
+  button.ghost { padding: 9px 14px; background: var(--panel-2); border: 1px solid var(--border);
+    color: var(--text); border-radius: 6px; cursor: pointer; font-size: 12px;
+    font-family: 'DM Mono', monospace; }
+  button.ghost:hover { background: var(--border); }
+  .sim-row { display: flex; gap: 10px; align-items: center; margin-top: 12px; }
+
+  #result-area { min-height: 120px; }
+  .decision-card { display: flex; align-items: center; gap: 18px; padding: 18px;
+    border-radius: 10px; margin-bottom: 16px; }
+  .decision-card.APPROVE { background: var(--green-dim); border: 1px solid rgba(74,222,128,0.25); }
+  .decision-card.REVIEW { background: var(--amber-dim); border: 1px solid rgba(251,191,36,0.25); }
+  .decision-card.HOLD { background: var(--red-dim); border: 1px solid rgba(255,77,109,0.25); }
+  .decision-big { font-size: 28px; font-weight: 700; font-family: 'DM Mono', monospace; }
+  .decision-card.APPROVE .decision-big { color: var(--green); }
+  .decision-card.REVIEW .decision-big { color: var(--amber); }
+  .decision-card.HOLD .decision-big { color: var(--red); }
+  .decision-meta { display: flex; flex-direction: column; gap: 3px;
+    font-family: 'DM Mono', monospace; font-size: 12px; color: var(--muted); }
+  .decision-meta b { color: var(--text); font-weight: 500; }
+
+  .shap-bar-row { display: grid; grid-template-columns: 1fr 160px; gap: 12px;
+    align-items: center; padding: 6px 0; font-family: 'DM Mono', monospace; font-size: 11px; }
+  .shap-label { color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .shap-bar-wrap { position: relative; height: 16px; background: var(--panel-2);
+    border-radius: 3px; overflow: hidden; }
+  .shap-bar { position: absolute; top: 0; bottom: 0; }
+  .shap-bar.pos { left: 50%; background: var(--red); }
+  .shap-bar.neg { right: 50%; background: var(--green); }
+  .shap-axis { position: absolute; left: 50%; top: 0; bottom: 0; width: 1px;
+    background: var(--border); z-index: 1; }
+
+  #fca-area { font-family: 'DM Mono', monospace; font-size: 11px; max-height: 360px; overflow-y: auto; }
+  .fca-row { display: grid; grid-template-columns: 180px 1fr; gap: 12px; padding: 5px 0;
+    border-bottom: 1px solid var(--border); align-items: start; }
+  .fca-row:last-child { border-bottom: 0; }
+  .fca-key { color: var(--muted); }
+  .fca-val { color: var(--text); word-break: break-word; }
+  .fca-nested { padding-left: 12px; border-left: 2px solid var(--border); margin: 2px 0; }
+
+  #feed-list { max-height: 280px; overflow-y: auto; }
+  .feed-row { display: grid; grid-template-columns: 110px 130px 1fr 90px 70px;
+    gap: 12px; padding: 9px 18px; border-bottom: 1px solid var(--border);
+    font-family: 'DM Mono', monospace; font-size: 11px; align-items: center; }
+  .feed-row:last-child { border-bottom: 0; }
+  .feed-row.APPROVE .feed-decision { color: var(--green); }
+  .feed-row.REVIEW .feed-decision { color: var(--amber); }
+  .feed-row.HOLD .feed-decision { color: var(--red); }
+  .feed-reason { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .empty { padding: 24px; color: var(--muted); text-align: center; font-size: 12px; }
+
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  @media (max-width: 1100px) { main { grid-template-columns: 1fr; } .row { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>PSP Fraud Scoring <span>· Live Dashboard</span></h1>
+  <div class="spacer"></div>
+  <div id="status-pill"><span id="status-dot"></span><span id="status-text">CONNECTING...</span></div>
+  <div id="latency-badge">-</div>
+  <div class="env-toggle">
+    <button id="btn-local" class="active" onclick="setEnv('local')">LOCAL</button>
+    <button id="btn-aws" onclick="setEnv('aws')">AWS</button>
+  </div>
+  <input id="aws-url-input" type="text" placeholder="https://runtime.sagemaker.eu-west-2.amazonaws.com/...">
+</header>
+
+<div class="kpi-strip">
+  <div class="kpi"><div class="kpi-label">Scored today</div><div class="kpi-value" id="kpi-total">0</div></div>
+  <div class="kpi"><div class="kpi-label">Approved</div><div class="kpi-value" id="kpi-approve" style="color:var(--green)">0</div></div>
+  <div class="kpi"><div class="kpi-label">Review</div><div class="kpi-value" id="kpi-review" style="color:var(--amber)">0</div></div>
+  <div class="kpi"><div class="kpi-label">Held</div><div class="kpi-value" id="kpi-hold" style="color:var(--red)">0</div></div>
+  <div class="kpi"><div class="kpi-label">Avg latency</div><div class="kpi-value" id="kpi-latency">-</div></div>
+  <div class="kpi"><div class="kpi-label">Est. daily saving</div><div class="kpi-value" id="kpi-saving">&pound;0</div></div>
+</div>
+
+<main>
+  <div class="panel">
+    <h3>Score a transaction</h3>
+    <div class="panel-body">
+      <form id="score-form" onsubmit="event.preventDefault(); scoreTransaction(buildPayloadFromForm());">
+        <label class="full"><span class="lbl">Transaction ID</span><input type="text" id="f-txn" required></label>
+        <label class="full"><span class="lbl">Card ID</span><input type="text" id="f-card" required></label>
+        <label><span class="lbl">Amount (&pound;)</span><input type="number" id="f-amount" min="0.01" step="0.01" value="120" required></label>
+        <label><span class="lbl">Device type</span>
+          <select id="f-device"><option>desktop</option><option>mobile</option></select>
+        </label>
+        <label><span class="lbl">Hour of day (0-23)</span><input type="number" id="f-hour" min="0" max="23" value="12" required></label>
+        <label><span class="lbl">Day of week (0-6)</span><input type="number" id="f-dow" min="0" max="6" value="2" required></label>
+        <label><span class="lbl">Dest acct age (days)</span><input type="number" id="f-destage" min="0" value="100" required></label>
+        <label><span class="lbl">Card age (days)</span><input type="number" id="f-cardage" min="0" value="300"></label>
+        <label><span class="lbl">Velocity 1h</span><input type="number" id="f-v1" min="0" value="0"></label>
+        <label><span class="lbl">Velocity 24h</span><input type="number" id="f-v24" min="0" value="0"></label>
+        <label class="full"><span class="lbl">Amount deviation (x card mean)</span><input type="number" id="f-dev" min="0" step="0.1" value="1.0"></label>
+        <div class="full checks">
+          <label><input type="checkbox" id="f-late"> Late night</label>
+          <label><input type="checkbox" id="f-weekend"> Weekend</label>
+        </div>
+        <button class="primary full" type="submit">Score transaction</button>
+      </form>
+      <div class="sim-row">
+        <button class="ghost" id="sim-toggle" onclick="toggleSim()">Start simulation</button>
+        <span id="sim-status" style="color:var(--muted); font-family:'DM Mono', monospace; font-size: 11px;">idle</span>
+      </div>
+    </div>
+  </div>
+
+  <div>
+    <div class="panel">
+      <h3>Result</h3>
+      <div class="panel-body" id="result-area">
+        <div class="empty">Submit a transaction to see the live score, SHAP reasons, and FCA audit record.</div>
+      </div>
+    </div>
+
+    <div class="row" style="margin-top: 18px;">
+      <div class="panel">
+        <h3>SHAP - feature contributions</h3>
+        <div class="panel-body" id="shap-area">
+          <div class="empty">No scored transaction yet.</div>
+        </div>
+      </div>
+      <div class="panel">
+        <h3>FCA audit record</h3>
+        <div class="panel-body" id="fca-area">
+          <div class="empty">No scored transaction yet.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top: 18px;">
+      <h3>Live feed</h3>
+      <div id="feed-list">
+        <div class="empty">No transactions scored yet.</div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script>
+const ENDPOINTS = {
+  local: 'http://127.0.0.1:8000',
+  aws: localStorage.getItem('aws_endpoint_url') || ''
+};
+let currentEnv = 'local';
+let simHandle = null;
+let simRunning = false;
+const localCounters = { total: 0, APPROVE: 0, REVIEW: 0, HOLD: 0, latencySum: 0, latencyN: 0 };
+
+// --- Environment toggle (Task 10) ---
+function setEnv(env) {
+  currentEnv = env;
+  document.getElementById('btn-local').classList.toggle('active', env === 'local');
+  document.getElementById('btn-aws').classList.toggle('active', env === 'aws');
+  document.getElementById('aws-url-input').classList.toggle('visible', env === 'aws');
+  checkHealth();
+  syncMetrics();
+}
+
+const awsInput = document.getElementById('aws-url-input');
+awsInput.value = ENDPOINTS.aws;
+awsInput.addEventListener('input', (e) => {
+  ENDPOINTS.aws = e.target.value.trim();
+  localStorage.setItem('aws_endpoint_url', ENDPOINTS.aws);
+  if (currentEnv === 'aws') { checkHealth(); syncMetrics(); }
+});
+
+// --- Error rendering (Task 2: no mock fallbacks) ---
+function renderAPIError(message) {
+  document.getElementById('result-area').innerHTML = `
+    <div style="padding:20px;background:var(--red-dim);border:1px solid rgba(255,77,109,0.25);border-radius:10px;font-family:'DM Mono',monospace;font-size:12px;color:var(--red);">
+      API ERROR: ${escapeHtml(message)}<br><br>
+      Make sure the API is running:<br>
+      uvicorn src.api.main:app --reload --port 8000
+    </div>`;
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c =>
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function buildPayloadFromForm() {
+  return {
+    transaction_id: document.getElementById('f-txn').value || ('TXN-' + Date.now()),
+    card_id: document.getElementById('f-card').value || ('CARD-' + Math.floor(Math.random()*1e9)),
+    amount: parseFloat(document.getElementById('f-amount').value),
+    device_type: document.getElementById('f-device').value,
+    hour_of_day: parseInt(document.getElementById('f-hour').value, 10),
+    day_of_week: parseInt(document.getElementById('f-dow').value, 10),
+    destination_account_age_days: parseInt(document.getElementById('f-destage').value, 10),
+    tx_velocity_1h: parseInt(document.getElementById('f-v1').value, 10) || 0,
+    tx_velocity_24h: parseInt(document.getElementById('f-v24').value, 10) || 0,
+    amt_deviation: parseFloat(document.getElementById('f-dev').value) || 1.0,
+    is_late_night: document.getElementById('f-late').checked,
+    is_weekend: document.getElementById('f-weekend').checked,
+    card_age_days: parseInt(document.getElementById('f-cardage').value, 10) || 0
+  };
+}
+
+// --- Single scoring entrypoint (Tasks 3, 8) ---
+async function scoreTransaction(payload) {
+  const baseUrl = ENDPOINTS[currentEnv];
+  if (!baseUrl) {
+    renderAPIError(`No URL configured for environment "${currentEnv}". Enter the SageMaker URL.`);
+    return null;
+  }
+  const url = `${baseUrl}/score`;
+  try {
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(8000)
+    });
+    if (!resp.ok) {
+      renderAPIError(`HTTP ${resp.status}: ${resp.statusText}`);
+      return null;
+    }
+    let data;
+    try { data = await resp.json(); }
+    catch (e) { renderAPIError("Invalid response format from API"); return null; }
+    renderResult(data);
+    renderSHAP(data);
+    renderFCA(data);
+    addFeedItem(data);
+    updateStats(data.decision, data.latency_ms);
+    return data;
+  } catch (err) {
+    if (err.name === 'TimeoutError') renderAPIError("Request timed out after 8 seconds");
+    else renderAPIError(`Cannot connect to API at ${baseUrl}`);
+    return null;
+  }
+}
+
+function renderResult(data) {
+  const a = document.getElementById('result-area');
+  const probPct = (data.fraud_probability * 100).toFixed(2);
+  const thrPct = (data.threshold_used * 100).toFixed(2);
+  a.innerHTML = `
+    <div class="decision-card ${escapeHtml(data.decision)}">
+      <div class="decision-big">${escapeHtml(data.decision)}</div>
+      <div class="decision-meta">
+        <div><b>Txn:</b> ${escapeHtml(data.transaction_id)}</div>
+        <div><b>P(fraud):</b> ${probPct}% &nbsp; <b>threshold:</b> ${thrPct}%</div>
+        <div><b>Model:</b> ${escapeHtml(data.model_version)} &middot; <b>API latency:</b> ${data.latency_ms.toFixed(2)} ms</div>
+      </div>
+    </div>
+    <div style="font-family:'DM Mono',monospace; font-size:11px; color:var(--muted);">
+      Top reasons:
+      <ul style="margin: 8px 0 0 18px; padding: 0; color: var(--text);">
+        ${(data.reasons || []).map(r => `<li style="margin-bottom: 4px;">${escapeHtml(r)}</li>`).join('')}
+      </ul>
+    </div>`;
+}
+
+// --- SHAP bars (Task 4) ---
+function renderSHAP(data) {
+  const a = document.getElementById('shap-area');
+  let entries = [];
+  const sv = data.fca_explanation && data.fca_explanation.shap_values;
+  if (sv && typeof sv === 'object' && Object.keys(sv).length > 0) {
+    entries = Object.entries(sv).map(([k, v]) => [k, Number(v)]);
+  } else if (Array.isArray(data.reasons) && data.reasons.length) {
+    const n = data.reasons.length;
+    entries = data.reasons.map((r, i) => [r, (n - i) / n]);
+  } else {
+    a.innerHTML = '<div class="empty">No SHAP data in response.</div>';
+    return;
+  }
+  entries.sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
+  const maxAbs = Math.max(...entries.map(e => Math.abs(e[1]))) || 1;
+  a.innerHTML = entries.map(([feat, val]) => {
+    const pct = Math.min(50, (Math.abs(val) / maxAbs) * 50);
+    const bar = val >= 0
+      ? `<div class="shap-bar pos" style="width:${pct}%"></div>`
+      : `<div class="shap-bar neg" style="width:${pct}%"></div>`;
+    return `<div class="shap-bar-row">
+      <div class="shap-label" title="${escapeHtml(feat)}">${escapeHtml(feat)}</div>
+      <div class="shap-bar-wrap"><div class="shap-axis"></div>${bar}</div>
+    </div>`;
+  }).join('') + `
+    <div style="margin-top:10px; font-size:10px; color:var(--muted); font-family:'DM Mono',monospace;">
+      <span style="color:var(--red)">&#9646;</span> increases P(fraud) &nbsp;&middot;&nbsp;
+      <span style="color:var(--green)">&#9646;</span> decreases P(fraud)
+    </div>`;
+}
+
+// --- FCA audit (Task 5) ---
+function renderFCA(data) {
+  const a = document.getElementById('fca-area');
+  const fca = data.fca_explanation;
+  if (!fca || typeof fca !== 'object') {
+    a.innerHTML = '<div class="empty">No FCA audit record in response.</div>';
+    return;
+  }
+  a.innerHTML = renderDict(fca);
+}
+
+function renderDict(obj) {
+  return Object.entries(obj).map(([k, v]) => {
+    let valHtml;
+    if (v === null || v === undefined) {
+      valHtml = '<span style="color:var(--muted)">null</span>';
+    } else if (Array.isArray(v)) {
+      valHtml = `<div class="fca-nested">${v.map((item, i) => {
+        if (item && typeof item === 'object') {
+          return `<div style="margin-bottom: 4px;"><span class="fca-key">[${i}]</span>${renderDict(item)}</div>`;
+        }
+        return `<div><span class="fca-key">[${i}]</span> ${escapeHtml(String(item))}</div>`;
+      }).join('')}</div>`;
+    } else if (typeof v === 'object') {
+      valHtml = `<div class="fca-nested">${renderDict(v)}</div>`;
+    } else {
+      valHtml = `<span class="fca-val">${escapeHtml(String(v))}</span>`;
+    }
+    return `<div class="fca-row"><div class="fca-key">${escapeHtml(k)}</div><div>${valHtml}</div></div>`;
+  }).join('');
+}
+
+function addFeedItem(data) {
+  const list = document.getElementById('feed-list');
+  const empty = list.querySelector('.empty');
+  if (empty) list.innerHTML = '';
+  const row = document.createElement('div');
+  row.className = `feed-row ${escapeHtml(data.decision)}`;
+  const time = new Date().toLocaleTimeString();
+  const firstReason = (data.reasons && data.reasons[0]) || '';
+  row.innerHTML = `
+    <div>${time}</div>
+    <div>${escapeHtml(data.transaction_id)}</div>
+    <div class="feed-reason" title="${escapeHtml(firstReason)}">P=${(data.fraud_probability * 100).toFixed(1)}% &middot; ${escapeHtml(firstReason)}</div>
+    <div class="feed-decision">${escapeHtml(data.decision)}</div>
+    <div>${data.latency_ms.toFixed(1)}ms</div>`;
+  list.insertBefore(row, list.firstChild);
+  while (list.children.length > 30) list.removeChild(list.lastChild);
+}
+
+// --- Local counter fallback for /metrics (Task 6) ---
+function updateStats(decision, latency_ms) {
+  localCounters.total++;
+  if (decision in localCounters) localCounters[decision]++;
+  localCounters.latencySum += latency_ms;
+  localCounters.latencyN++;
+}
+
+function renderLocalCounters() {
+  document.getElementById('kpi-total').textContent = localCounters.total.toLocaleString();
+  document.getElementById('kpi-approve').textContent = localCounters.APPROVE.toLocaleString();
+  document.getElementById('kpi-review').textContent = localCounters.REVIEW.toLocaleString();
+  document.getElementById('kpi-hold').textContent = localCounters.HOLD.toLocaleString();
+  const avg = localCounters.latencyN ? Math.round(localCounters.latencySum / localCounters.latencyN) : null;
+  document.getElementById('kpi-latency').textContent = avg !== null ? avg + 'ms' : '-';
+  document.getElementById('kpi-saving').textContent = '£' + (localCounters.HOLD * 125).toLocaleString();
+}
+
+// --- /metrics poll (Task 6) ---
+async function syncMetrics() {
+  const baseUrl = ENDPOINTS[currentEnv];
+  if (!baseUrl) { renderLocalCounters(); return; }
+  try {
+    const resp = await fetch(`${baseUrl}/metrics`, { signal: AbortSignal.timeout(3000) });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const m = await resp.json();
+    const d = m.decisions || {};
+    document.getElementById('kpi-total').textContent = (m.transactions_scored_today || 0).toLocaleString();
+    document.getElementById('kpi-approve').textContent = (d.APPROVE || 0).toLocaleString();
+    document.getElementById('kpi-review').textContent = (d.REVIEW || 0).toLocaleString();
+    document.getElementById('kpi-hold').textContent = (d.HOLD || 0).toLocaleString();
+    document.getElementById('kpi-latency').textContent = Math.round(m.avg_latency_ms || 0) + 'ms';
+    document.getElementById('kpi-saving').textContent = '£' + ((d.HOLD || 0) * 125).toLocaleString();
+  } catch (e) {
+    console.warn('syncMetrics failed, falling back to local counters:', e.message);
+    renderLocalCounters();
+  }
+}
+
+// --- /health poll (Task 7) ---
+async function checkHealth() {
+  const baseUrl = ENDPOINTS[currentEnv];
+  const dot = document.getElementById('status-dot');
+  const text = document.getElementById('status-text');
+  const badge = document.getElementById('latency-badge');
+  if (!baseUrl) {
+    dot.className = 'dead'; text.textContent = 'NO ENDPOINT - SET URL';
+    badge.textContent = '-'; badge.classList.add('offline');
+    return;
+  }
+  try {
+    const resp = await fetch(`${baseUrl}/health`, { signal: AbortSignal.timeout(3000) });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const h = await resp.json();
+    dot.className = 'live';
+    text.textContent = `API CONNECTED · ${baseUrl}`;
+    const sec = h.uptime_seconds || 0;
+    const hh = Math.floor(sec / 3600);
+    const mm = Math.floor((sec % 3600) / 60);
+    badge.textContent = `UP ${hh}h ${mm}m`;
+    badge.classList.remove('offline');
+  } catch (e) {
+    dot.className = 'dead';
+    text.textContent = 'API OFFLINE - start with uvicorn';
+    badge.textContent = 'OFFLINE'; badge.classList.add('offline');
+  }
+}
+
+// --- Simulation (Task 8) ---
+function randomTxnPayload() {
+  const id = Math.floor(Math.random() * 1e9);
+  return {
+    transaction_id: 'SIM-' + id,
+    card_id: 'CARD-' + id,
+    amount: Math.round((Math.random() * 800 + 30) * 100) / 100,
+    device_type: Math.random() < 0.5 ? 'desktop' : 'mobile',
+    hour_of_day: Math.floor(Math.random() * 24),
+    day_of_week: Math.floor(Math.random() * 7),
+    destination_account_age_days: Math.floor(Math.random() * 600),
+    tx_velocity_1h: Math.floor(Math.random() * 5),
+    tx_velocity_24h: Math.floor(Math.random() * 20),
+    amt_deviation: Math.round(Math.random() * 30) / 10,
+    is_late_night: Math.random() < 0.2,
+    is_weekend: Math.random() < 0.3,
+    card_age_days: Math.floor(Math.random() * 800)
+  };
+}
+
+async function runSimStep() {
+  const data = await scoreTransaction(randomTxnPayload());
+  if (!data) {
+    stopSim();
+    const list = document.getElementById('feed-list');
+    const note = document.createElement('div');
+    note.className = 'empty';
+    note.style.color = 'var(--red)';
+    note.textContent = 'Simulation stopped - API connection lost';
+    list.insertBefore(note, list.firstChild);
+  }
+}
+
+function startSim() {
+  if (simRunning) return;
+  simRunning = true;
+  document.getElementById('sim-toggle').textContent = 'Stop simulation';
+  document.getElementById('sim-status').textContent = 'running · 1 txn/sec';
+  simHandle = setInterval(runSimStep, 1000);
+}
+
+function stopSim() {
+  simRunning = false;
+  if (simHandle) clearInterval(simHandle);
+  simHandle = null;
+  document.getElementById('sim-toggle').textContent = 'Start simulation';
+  document.getElementById('sim-status').textContent = 'idle';
+}
+
+function toggleSim() { simRunning ? stopSim() : startSim(); }
+
+// --- Bootstrap ---
+document.getElementById('f-txn').value = 'TXN-' + Date.now();
+document.getElementById('f-card').value = 'CARD-' + Math.floor(Math.random() * 1e9);
+checkHealth();
+syncMetrics();
+setInterval(checkHealth, 10000);
+setInterval(syncMetrics, 5000);
+</script>
+</body>
+</html>
