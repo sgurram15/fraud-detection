@@ -104,6 +104,9 @@
   .decision-meta { display: flex; flex-direction: column; gap: 3px;
     font-family: 'DM Mono', monospace; font-size: 12px; color: var(--muted); }
   .decision-meta b { color: var(--text); font-weight: 500; }
+  .headline-reason { margin: 0 0 14px; padding: 11px 14px; background: var(--panel-2);
+    border-left: 3px solid var(--blue); border-radius: 6px; font-size: 13px; color: var(--muted); }
+  .headline-reason b { color: var(--text); font-weight: 600; }
 
   .shap-bar-row { display: grid; grid-template-columns: 1fr 160px; gap: 12px;
     align-items: center; padding: 6px 0; font-family: 'DM Mono', monospace; font-size: 11px; }
@@ -188,6 +191,7 @@
       <div class="sim-row">
         <button class="ghost" id="sim-toggle" onclick="toggleSim()">Start simulation</button>
         <button class="ghost" onclick="loadRandomReal()" title="Pre-fill the form with a random row from data/raw/test_transaction.csv">Load random real txn</button>
+        <button class="ghost" onclick="scoreRandomReal()" title="Score a real IEEE-CIS transaction using its FULL feature vector (all 417 model inputs), with the true label">Score random real txn</button>
         <span id="sim-status" style="color:var(--muted); font-family:'DM Mono', monospace; font-size: 11px;">idle</span>
       </div>
     </div>
@@ -321,10 +325,37 @@ async function scoreTransaction(payload) {
   }
 }
 
+// --- Reason helpers: surface human-meaningful reasons, drop missing-feature
+// noise (e.g. "C3 = None"). The FULL unfiltered record stays in the FCA audit
+// panel below, so nothing is hidden from audit — this only cleans the summary.
+function isNoiseReason(text) { return /=\s*None\s*$/i.test(String(text)); }
+
+function meaningfulReasons(data) {
+  let out = [];
+  const tr = data.fca_explanation && data.fca_explanation.top_reasons;
+  if (Array.isArray(tr) && tr.length) {
+    out = tr.filter(r => r.value !== null && r.value !== undefined).map(r => r.reason);
+  }
+  if (!out.length) out = (data.reasons || []).filter(r => !isNoiseReason(r));
+  if (!out.length) out = (data.reasons || []);  // last resort: show raw
+  return out;
+}
+
 function renderResult(data) {
   const a = document.getElementById('result-area');
   const probPct = (data.fraud_probability * 100).toFixed(2);
   const thrPct = (data.threshold_used * 100).toFixed(2);
+  const reasons = meaningfulReasons(data);
+  const label = data.decision === 'APPROVE' ? 'Top factor' : 'Flagged because';
+  const headline = reasons[0] || 'No dominant signal in the supplied features';
+  let actualLine = '';
+  if (data.actual_is_fraud === 0 || data.actual_is_fraud === 1) {
+    const isFraud = data.actual_is_fraud === 1;
+    const predFraud = data.decision !== 'APPROVE';
+    const hit = (isFraud === predFraud);
+    actualLine = `<div><b>Actual label:</b> <span style="color:${isFraud ? 'var(--red)' : 'var(--green)'}">${isFraud ? 'FRAUD' : 'legit'}</span>`
+      + ` &middot; <span style="color:${hit ? 'var(--green)' : 'var(--amber)'}">${hit ? 'model agrees' : 'model differs'}</span></div>`;
+  }
   a.innerHTML = `
     <div class="decision-card ${escapeHtml(data.decision)}">
       <div class="decision-big">${escapeHtml(data.decision)}</div>
@@ -332,12 +363,14 @@ function renderResult(data) {
         <div><b>Txn:</b> ${escapeHtml(data.transaction_id)}</div>
         <div><b>P(fraud):</b> ${probPct}% &nbsp; <b>threshold:</b> ${thrPct}%</div>
         <div><b>Model:</b> ${escapeHtml(data.model_version)} &middot; <b>API latency:</b> ${data.latency_ms.toFixed(2)} ms</div>
+        ${actualLine}
       </div>
     </div>
+    <div class="headline-reason">${label}: <b>${escapeHtml(headline)}</b></div>
     <div style="font-family:'DM Mono',monospace; font-size:11px; color:var(--muted);">
       Top reasons:
       <ul style="margin: 8px 0 0 18px; padding: 0; color: var(--text);">
-        ${(data.reasons || []).map(r => `<li style="margin-bottom: 4px;">${escapeHtml(r)}</li>`).join('')}
+        ${reasons.map(r => `<li style="margin-bottom: 4px;">${escapeHtml(r)}</li>`).join('')}
       </ul>
     </div>`;
 }
@@ -346,13 +379,21 @@ function renderResult(data) {
 function renderSHAP(data) {
   const a = document.getElementById('shap-area');
   let entries = [];
+  const tr = data.fca_explanation && data.fca_explanation.top_reasons;
   const sv = data.fca_explanation && data.fca_explanation.shap_values;
-  if (sv && typeof sv === 'object' && Object.keys(sv).length > 0) {
+  if (Array.isArray(tr) && tr.length) {
+    // Prefer the ranked reasons; drop missing-feature (value === null) noise.
+    entries = tr.filter(r => r.value !== null && r.value !== undefined)
+                .map(r => [r.feature, Number(r.shap_value)]);
+  }
+  if (!entries.length && sv && typeof sv === 'object' && Object.keys(sv).length > 0) {
     entries = Object.entries(sv).map(([k, v]) => [k, Number(v)]);
-  } else if (Array.isArray(data.reasons) && data.reasons.length) {
+  }
+  if (!entries.length && Array.isArray(data.reasons) && data.reasons.length) {
     const n = data.reasons.length;
     entries = data.reasons.map((r, i) => [r, (n - i) / n]);
-  } else {
+  }
+  if (!entries.length) {
     a.innerHTML = '<div class="empty">No SHAP data in response.</div>';
     return;
   }
@@ -413,7 +454,7 @@ function addFeedItem(data) {
   const row = document.createElement('div');
   row.className = `feed-row ${escapeHtml(data.decision)}`;
   const time = new Date().toLocaleTimeString();
-  const firstReason = (data.reasons && data.reasons[0]) || '';
+  const firstReason = meaningfulReasons(data)[0] || '';
   row.innerHTML = `
     <div>${time}</div>
     <div>${escapeHtml(data.transaction_id)}</div>
@@ -542,6 +583,32 @@ function stopSim() {
 }
 
 function toggleSim() { simRunning ? stopSim() : startSim(); }
+
+// --- Score one real IEEE-CIS transaction with its FULL feature vector ---
+// Unlike the form (18 fields) this hits /sample/scored, where the API feeds
+// all 417 model columns (raw C/V/D + id_) so the decision and SHAP reasons are
+// meaningful. The response also carries the true isFraud label.
+async function scoreRandomReal() {
+  const baseUrl = ENDPOINTS[currentEnv];
+  if (!baseUrl) { renderAPIError(`No URL configured for environment "${currentEnv}".`); return; }
+  try {
+    const resp = await fetch(`${baseUrl}/sample/scored`, { signal: AbortSignal.timeout(8000) });
+    if (!resp.ok) {
+      const body = await resp.json().catch(() => ({}));
+      renderAPIError(`Real-txn scoring unavailable (HTTP ${resp.status}): ${body.error || resp.statusText}`);
+      return;
+    }
+    const data = await resp.json();
+    renderResult(data);
+    renderSHAP(data);
+    renderFCA(data);
+    addFeedItem(data);
+    updateStats(data.decision, data.latency_ms);
+  } catch (err) {
+    if (err.name === 'TimeoutError') renderAPIError("Real-txn scoring timed out");
+    else renderAPIError(`Cannot reach ${baseUrl}/sample/scored`);
+  }
+}
 
 // --- Load one real IEEE-CIS transaction into the form ---
 async function loadRandomReal() {

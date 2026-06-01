@@ -60,9 +60,11 @@ _MODEL_FILENAME = "baseline_xgboost.pkl"  # production model (user-confirmed)
 _MODEL_PATH = _ROOT / "src" / "models" / "saved" / _MODEL_FILENAME
 _METRICS_JSON = _ROOT / "docs" / "model_performance" / "baseline_metrics.json"
 
-# Decision routing bands (C1.3) — independent of the cost threshold.
-APPROVE_MAX = 0.30   # prob < 0.30          -> APPROVE
-HOLD_MIN = 0.70      # 0.30 <= prob <= 0.70 -> REVIEW ; prob > 0.70 -> HOLD
+# Decision routing bands (C1.3). The APPROVE ceiling is tied to the
+# cost-optimal threshold (_THRESHOLD, 0.19) so a score on the model's fraud
+# side can never be auto-approved; HOLD_MIN is the high-confidence step-up band.
+# prob < threshold -> APPROVE ; threshold <= prob <= 0.70 -> REVIEW ; > 0.70 -> HOLD
+HOLD_MIN = 0.70
 
 # Engineered serving features the request can override on the store output.
 _OVERLAY = {
@@ -208,7 +210,7 @@ _COUNTERS = {
 
 
 def _route(prob: float) -> str:
-    if prob < APPROVE_MAX:
+    if prob < _THRESHOLD:  # below the cost-optimal fraud line -> auto-approve
         return "APPROVE"
     if prob <= HOLD_MIN:
         return "REVIEW"
@@ -258,13 +260,17 @@ def _build_features(req: TransactionRequest) -> dict:
     return feats
 
 
-def _score(req: TransactionRequest) -> FraudScoreResponse:
-    t0 = time.perf_counter()
-    feats = _build_features(req)
+def _score_feats(transaction_id: str, amount: float, feats: dict,
+                 t0: float | None = None) -> FraudScoreResponse:
+    """Shared scoring tail: predict + explain + route + FCA + counters from an
+    already-built feature dict. Used by both the 18-field /score path and the
+    full-feature-vector /sample/scored path."""
+    if t0 is None:
+        t0 = time.perf_counter()
     prob, reason_dicts = _predict_and_explain(feats)
     decision = _route(prob)
     fca = generate_fca_explanation(
-        {"TransactionID": req.transaction_id, "TransactionAmt": req.amount},
+        {"TransactionID": transaction_id, "TransactionAmt": amount},
         {"fraud_probability": prob, "threshold": _THRESHOLD,
          "decision": decision},
         reason_dicts,
@@ -282,7 +288,7 @@ def _score(req: TransactionRequest) -> FraudScoreResponse:
             _COUNTERS["fraud_today"] += 1
 
     return FraudScoreResponse(
-        transaction_id=req.transaction_id,
+        transaction_id=transaction_id,
         fraud_probability=prob,
         decision=decision,
         threshold_used=_THRESHOLD,
@@ -291,6 +297,12 @@ def _score(req: TransactionRequest) -> FraudScoreResponse:
         model_version=MODEL_META["version"],
         latency_ms=latency_ms,
     )
+
+
+def _score(req: TransactionRequest) -> FraudScoreResponse:
+    t0 = time.perf_counter()
+    feats = _build_features(req)
+    return _score_feats(req.transaction_id, req.amount, feats, t0)
 
 
 # --------------------------------------------------------------------------- #
@@ -389,6 +401,60 @@ def sample() -> dict:
     import random as _random
     ev = _random.choice(_SAMPLE_TXNS)
     return {k: v for k, v in ev.items() if k != "_raw"}
+
+
+# --------------------------------------------------------------------------- #
+# GET /sample/scored — score a REAL transaction using its FULL feature vector
+# (all 417 model columns, incl. raw C/V/D and id_), not just the 18 fields the
+# form sends. This closes the train/serve feature gap: the model sees the
+# columns it actually relies on, so the decision AND the SHAP reasons are
+# meaningful (no more "C3 = None" dominating). Source: the feature-store's
+# training_features.parquet — real IEEE-CIS rows (build_features output) WITH
+# the true isFraud label. NOTE: these are TRAINING rows, so this demonstrates
+# the model reasoning on real features, not held-out generalisation — use
+# docs/model_performance/ for performance claims.
+# --------------------------------------------------------------------------- #
+_REAL_DF: "pd.DataFrame | None" = None
+_REAL_PARQUET = (_ROOT / "data" / "processed" / "feature_store"
+                 / "training_features.parquet")
+
+
+@app.get("/sample/scored")
+def sample_scored() -> dict:
+    global _REAL_DF
+    if _REAL_DF is None:
+        if not _REAL_PARQUET.exists():
+            return JSONResponse(  # type: ignore[return-value]
+                status_code=503,
+                content={"error": "training_features.parquet not found; build "
+                         "the feature store (fit_batch) first."},
+            )
+        _REAL_DF = pd.read_parquet(_REAL_PARQUET)
+
+    row = _REAL_DF.sample(1).iloc[0].to_dict()
+    feats = {name: row.get(name) for name in _FEATURE_NAMES}
+
+    tid = row.get("TransactionID")
+    try:
+        txn_id = str(int(tid))
+    except (TypeError, ValueError):
+        txn_id = f"REAL-{int(np.random.default_rng().integers(1_000_000_000))}"
+    amount = float(row.get("TransactionAmt") or 0.0)
+
+    resp = _score_feats(txn_id, amount, feats)
+    out = resp.model_dump()
+
+    actual = row.get("isFraud")
+    try:
+        out["actual_is_fraud"] = (
+            int(actual)
+            if actual is not None and not (isinstance(actual, float)
+                                           and np.isnan(actual))
+            else None
+        )
+    except (TypeError, ValueError):
+        out["actual_is_fraud"] = None
+    return out
 
 
 # --------------------------------------------------------------------------- #

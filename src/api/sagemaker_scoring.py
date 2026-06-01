@@ -35,8 +35,9 @@ _STATE_FILENAME = "online_state.pkl"
 _METRICS_FILENAME = "baseline_metrics.json"
 _MODEL_VERSION = "xgboost-baseline-v1"
 
-# Decision bands (identical to src/api/main.py).
-APPROVE_MAX = 0.30
+# Decision bands (identical to src/api/main.py). The APPROVE ceiling is the
+# cost-optimal threshold (passed in per request) so a score on the model's
+# fraud side can never be auto-approved; HOLD_MIN is the high-confidence band.
 HOLD_MIN = 0.70
 
 # Engineered serving features the request overrides on the store output.
@@ -119,8 +120,8 @@ def _feature_row(feats: dict, feature_names: list, feat_index: dict) -> np.ndarr
     return row
 
 
-def _route(prob: float) -> str:
-    if prob < APPROVE_MAX:
+def _route(prob: float, threshold: float) -> str:
+    if prob < threshold:  # below the cost-optimal fraud line -> auto-approve
         return "APPROVE"
     if prob <= HOLD_MIN:
         return "REVIEW"
@@ -173,7 +174,7 @@ def output_fn(prediction: dict, accept: str = "application/json") -> str:
     inp = prediction["input"]
     prob = prediction["prob"]
     threshold = prediction["threshold"]
-    decision = _route(prob)
+    decision = _route(prob, threshold)
     fca = generate_fca_explanation(
         {"TransactionID": inp.get("transaction_id"),
          "TransactionAmt": inp.get("amount")},
