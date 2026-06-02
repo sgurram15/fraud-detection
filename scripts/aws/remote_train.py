@@ -40,7 +40,22 @@ LOG = os.path.join(ROOT, "training.log")
 METRICS = os.path.join(ROOT, "metrics.log")
 SHIP_EVERY_S = 30
 
+# Step 0 downloads the raw CSVs from S3 to the box (the pipeline reads the
+# local filesystem; the git clone has no data). boto3 + instance-profile creds,
+# so no AWS CLI / keys needed. Passed as a list -> no shell quoting.
+_SYNC_SCRIPT = (
+    "import boto3, os;"
+    "b=os.environ['S3_BUCKET'];"
+    "s3=boto3.client('s3', region_name='eu-west-2');"
+    "ks=[o['Key'] for o in s3.list_objects_v2(Bucket=b, Prefix='data/raw/')"
+    ".get('Contents', []) if not o['Key'].endswith('/')];"
+    "[os.makedirs(os.path.dirname(k) or '.', exist_ok=True) for k in ks];"
+    "[s3.download_file(b, k, k) for k in ks];"
+    "print('synced', len(ks), 'files from s3://'+b+'/data/raw/')"
+)
+
 STEPS = [
+    ("sync_data", ["python3.11", "-c", _SYNC_SCRIPT]),
     ("build_features", ["python3.11", "src/features/build_features.py"]),
     ("handle_imbalance", ["python3.11", "src/features/handle_imbalance.py"]),
     ("train_baseline", ["python3.11", "src/models/train_baseline.py"]),

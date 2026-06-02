@@ -87,15 +87,17 @@ def main() -> None:
             f"nohup setsid python3.11 scripts/aws/remote_train.py "
             f">/home/ec2-user/remote_train.boot.log 2>&1 & echo LAUNCHED pid $!"
         )
+        # Arm the hard backstop BEFORE launching, so the runner's own
+        # self-terminate (shutdown +3 on finish/failure, issued later)
+        # correctly OVERRIDES it. If armed after launch it would clobber a fast
+        # self-terminate and leave the box billing for the full 5h.
+        _run(client, "sudo shutdown -h +300 'fraud-detection backstop' "
+                     "2>/dev/null || echo '(backstop schedule failed)'")
         _run(client, launch)
         time.sleep(5)
         alive = _run(client, "pgrep -af remote_train.py | grep -v grep | "
                              "head -2 || echo 'NOT RUNNING — check "
                              "remote_train.boot.log'")
-        # Hard backstop: terminate after 5h even if the runner dies without
-        # self-terminating (e.g. the parent process is itself killed).
-        _run(client, "sudo shutdown -h +300 'fraud-detection backstop' "
-                     "2>/dev/null || echo '(backstop schedule failed)'")
     finally:
         client.close()
 

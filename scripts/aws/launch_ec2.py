@@ -45,6 +45,8 @@ except ImportError:
 INSTANCE_TYPE = "r5.2xlarge"  # 8 vCPU, 64 GB RAM — headroom for full
 # IEEE-CIS + SMOTE across CV folds (r5.xlarge/32 GB risked OOM on validate).
 HOURLY_GBP = 0.48  # r5.2xlarge eu-west-2 on-demand, approx
+ROOT_VOLUME_GB = 60  # AMI default is 8 GB — too small for 1.3 GB raw data +
+# features.parquet + the 3 balanced datasets handle_imbalance writes on full data
 SG_NAME = "fraud-detection-sg"
 KEY_NAME = "fraud-detection-key"
 KEY_PATH = Path.home() / ".ssh" / f"{KEY_NAME}.pem"
@@ -329,6 +331,11 @@ def main() -> None:
         SecurityGroupIds=[sg_id],
         IamInstanceProfile={"Name": PROFILE_NAME},
         UserData=USER_DATA,
+        BlockDeviceMappings=[{
+            "DeviceName": "/dev/xvda",  # AL2023 x86_64 root device
+            "Ebs": {"VolumeSize": ROOT_VOLUME_GB, "VolumeType": "gp3",
+                    "DeleteOnTermination": True},
+        }],
         TagSpecifications=[{
             "ResourceType": "instance",
             "Tags": [{"Key": "Name", "Value": "fraud-detection-training"},
