@@ -42,8 +42,9 @@ except ImportError:
           "    pip install python-dotenv", file=sys.stderr)
     sys.exit(1)
 
-INSTANCE_TYPE = "r5.xlarge"  # 4 vCPU, 32 GB RAM (full IEEE-CIS + SMOTE fits)
-HOURLY_GBP = 0.24  # r5.xlarge eu-west-2 on-demand, approx
+INSTANCE_TYPE = "r5.2xlarge"  # 8 vCPU, 64 GB RAM — headroom for full
+# IEEE-CIS + SMOTE across CV folds (r5.xlarge/32 GB risked OOM on validate).
+HOURLY_GBP = 0.48  # r5.2xlarge eu-west-2 on-demand, approx
 SG_NAME = "fraud-detection-sg"
 KEY_NAME = "fraud-detection-key"
 KEY_PATH = Path.home() / ".ssh" / f"{KEY_NAME}.pem"

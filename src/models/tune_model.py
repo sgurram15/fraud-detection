@@ -38,10 +38,12 @@ grid search.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
 import sys
+import time
 from pathlib import Path
 
 import joblib
@@ -61,6 +63,7 @@ from sklearn.metrics import (
 )
 from sklearn.model_selection import (
     GridSearchCV,
+    ParameterGrid,
     RandomizedSearchCV,
     StratifiedKFold,
     train_test_split,
@@ -156,24 +159,79 @@ def _recall_at_p95_scorer(estimator, X, y) -> float:
     return recall_at_precision(y, proba)[0]
 
 
+@contextlib.contextmanager
+def _tqdm_joblib(total: int, desc: str):
+    """Route joblib batch completions into a tqdm bar (live count + ETA).
+    No-op fallback if tqdm/joblib internals are unavailable, so the verbose
+    per-fit logs still provide step-by-step progress."""
+    try:
+        from tqdm.auto import tqdm
+        bar = tqdm(total=total, desc=desc, unit="fit",
+                   dynamic_ncols=True, mininterval=5.0)
+        base = joblib.parallel.BatchCompletionCallBack
+
+        class _Cb(base):
+            def __call__(self, *a, **k):
+                bar.update(n=self.batch_size)
+                return super().__call__(*a, **k)
+
+        joblib.parallel.BatchCompletionCallBack = _Cb
+    except Exception:  # noqa: BLE001
+        logger.info("Progress bar unavailable; relying on verbose fit logs.")
+        yield None
+        return
+    try:
+        yield bar
+    finally:
+        joblib.parallel.BatchCompletionCallBack = base
+        bar.close()
+
+
 def run_search(X, y, mode: str, n_iter: int):
     """Run RandomizedSearchCV (mode='random') or GridSearchCV
     (mode='full_grid'). Returns (best_params, best_score, results_list).
+    Emits a start banner, per-fit logs (verbose=2) and a live progress bar/ETA.
     """
     pipe = _search_pipeline()
     dist = {f"xgb__{k}": v for k, v in PARAM_GRID.items()}
     cv = StratifiedKFold(n_splits=N_SPLITS, shuffle=True,
                          random_state=RANDOM_STATE)
     common = dict(estimator=pipe, scoring=_recall_at_p95_scorer, cv=cv,
-                  n_jobs=1, refit=False, error_score=0.0)
+                  n_jobs=1, refit=False, error_score=0.0, verbose=2)
     if mode == "full_grid":
         search = GridSearchCV(param_grid=dist, **common)
+        n_combos = len(ParameterGrid(dist))
     else:
         search = RandomizedSearchCV(
             param_distributions=dist, n_iter=n_iter,
             random_state=RANDOM_STATE, **common,
         )
-    search.fit(X, y)
+        n_combos = n_iter
+    total_fits = n_combos * N_SPLITS
+    ncpu = os.cpu_count() or 1
+
+    print("=" * 60, flush=True)
+    print("HYPERPARAMETER TUNING STARTED", flush=True)
+    print(f"  combos x folds : {n_combos} x {N_SPLITS} = {total_fits} fits",
+          flush=True)
+    print(f"  rows           : {len(X):,}", flush=True)
+    print(f"  CPU cores      : {ncpu} (each XGBoost fit uses all cores)",
+          flush=True)
+    print("  progress       : one '[CV] END' line per fit + live ETA bar",
+          flush=True)
+    print("=" * 60, flush=True)
+    logger.info("TRAINING STARTED: %d fits, %d rows, %d CPU cores",
+                total_fits, len(X), ncpu)
+    if ncpu < 2:
+        logger.warning("Only %d CPU core(s) detected — tuning will be slow.",
+                       ncpu)
+
+    t0 = time.perf_counter()
+    with _tqdm_joblib(total_fits, "CV fits"):
+        search.fit(X, y)
+    mins = (time.perf_counter() - t0) / 60.0
+    logger.info("Tuning finished: %d fits in %.1f min (avg %.1fs/fit)",
+                total_fits, mins, mins * 60 / max(1, total_fits))
 
     cvres = search.cv_results_
     results = []

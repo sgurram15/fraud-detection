@@ -20,13 +20,16 @@ from _common import REGION, get_boto3
 # default (train_baseline.DEFAULT_SAMPLE_N) so the EC2 run trains, tunes and
 # validates on the COMPLETE IEEE-CIS dataset — matching the production model.
 _FULL = "FRAUD_SAMPLE_N=all"
+# Remote interpreter is python3.11: the bootstrap (launch_ec2 user-data)
+# installs all deps under python3.11; bare `python` on AL2023 is 3.9 and would
+# not see them (or may not exist). FRAUD_SAMPLE_N=all forces the FULL dataset.
 PIPELINE = [
-    "python src/features/build_features.py",
-    "python src/features/handle_imbalance.py",
-    f"{_FULL} python src/models/train_baseline.py",
-    f"{_FULL} python src/models/tune_model.py",
-    f"{_FULL} python src/models/validate_model.py",
-    f"{_FULL} python src/models/predict_test.py",  # test-set predictions
+    "python3.11 src/features/build_features.py",
+    "python3.11 src/features/handle_imbalance.py",
+    f"{_FULL} python3.11 src/models/train_baseline.py",
+    f"{_FULL} python3.11 src/models/tune_model.py",
+    f"{_FULL} python3.11 src/models/validate_model.py",
+    f"{_FULL} python3.11 src/models/predict_test.py",  # test-set predictions
 ]
 REMOTE_DIR = "/home/ec2-user/fraud-detection"
 
