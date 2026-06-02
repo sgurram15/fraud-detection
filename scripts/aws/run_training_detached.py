@@ -40,6 +40,19 @@ def _run(client, cmd: str, timeout: int = 180) -> str:
     return out
 
 
+def _fire(client, cmd: str) -> None:
+    """Fire a detached command WITHOUT reading to EOF. A backgrounded
+    nohup/setsid command can keep the channel open, so a blocking read would
+    time out and raise even though the launch succeeded."""
+    ch = client.get_transport().open_session()
+    ch.exec_command(cmd)
+    time.sleep(2)
+    try:
+        ch.close()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def main() -> None:
     ip = get_env("EC2_PUBLIC_IP")
     bucket = get_env("S3_BUCKET")
@@ -93,7 +106,7 @@ def main() -> None:
         # self-terminate and leave the box billing for the full 5h.
         _run(client, "sudo shutdown -h +300 'fraud-detection backstop' "
                      "2>/dev/null || echo '(backstop schedule failed)'")
-        _run(client, launch)
+        _fire(client, launch)  # detached — don't block reading its channel
         time.sleep(5)
         alive = _run(client, "pgrep -af remote_train.py | grep -v grep | "
                              "head -2 || echo 'NOT RUNNING — check "
