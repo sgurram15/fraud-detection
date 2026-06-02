@@ -147,7 +147,7 @@ fraud-loss data before production.
 | Kaggle data download | £0 |
 | `scripts/aws/setup_s3.py` | £0 to create; ~£0.023/GB/month to store |
 | `scripts/aws/upload_data.py` | S3 storage of ~1.3 GB ≈ £0.03/month + transfer |
-| `scripts/aws/launch_ec2.py` (t3.large) | **~£0.08/hour while running** |
+| `scripts/aws/launch_ec2.py` (r5.2xlarge, 60 GB root) | **~£0.48/hour while running** |
 | SageMaker training/tuning (Version 2) | per-instance, per-hour — see AWS_SETUP.md |
 
 **EC2 and SageMaker bill by the hour. Always run `scripts/aws/stop_ec2.py`

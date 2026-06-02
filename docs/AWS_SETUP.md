@@ -83,7 +83,7 @@ Run `python scripts/aws/setup_s3.py`. It creates:
 |---|---|---|
 | `scripts/aws/setup_s3.py` | Create private, versioned, encrypted bucket + folders | £0 create; ~£0.023/GB/mo |
 | `scripts/aws/upload_data.py` | Upload `data/raw/*.csv` to S3 (checksum-verified) | ~£0.03/mo storage of ~1.3 GB |
-| `scripts/aws/launch_ec2.py` | Launch t3.large (Amazon Linux 2023), auto-bootstrap | **~£0.08/hour running** |
+| `scripts/aws/launch_ec2.py` | Launch r5.2xlarge (64 GB, 60 GB root, Amazon Linux 2023), auto-bootstrap | **~£0.48/hour running** |
 | `scripts/aws/run_training_on_ec2.py` | SSH + run full training pipeline, upload artefacts | EC2 hours |
 | `scripts/aws/stop_ec2.py` | Stop the tagged instance (confirm first) | stops the bill |
 
