@@ -63,6 +63,31 @@ ARTIFACTS = {
         "data/processed/test_predictions.csv",
 }
 
+# Which artifacts each step produces -> uploaded to S3 the moment that step
+# finishes (checkpointing), so partial results survive a later-step failure.
+STEP_ARTIFACTS = {
+    "train_baseline": [
+        ("src/models/saved/baseline_xgboost.pkl",
+         "models/saved/baseline_xgboost.pkl"),
+        ("docs/model_performance/baseline_metrics.json",
+         "docs/model_performance/baseline_metrics.json"),
+    ],
+    "tune_model": [
+        ("src/models/saved/tuned_xgboost.pkl",
+         "models/saved/tuned_xgboost.pkl"),
+        ("docs/model_performance/tuning_results.json",
+         "docs/model_performance/tuning_results.json"),
+    ],
+    "validate_model": [
+        ("docs/model_performance/validation_report.json",
+         "docs/model_performance/validation_report.json"),
+    ],
+    "predict_test": [
+        ("data/processed/test_predictions.csv",
+         "data/processed/test_predictions.csv"),
+    ],
+}
+
 s3 = boto3.client("s3", region_name=REGION)
 _stop = threading.Event()
 state = {
@@ -138,6 +163,21 @@ def _capture_dmesg() -> None:
         log(f"(dmesg unavailable: {exc})")
 
 
+def _upload_artifacts(items) -> list:
+    """Upload (rel_path, s3_key) pairs that exist on disk. Idempotent."""
+    done = []
+    for rel, key in items:
+        path = os.path.join(ROOT, rel)
+        if os.path.exists(path):
+            try:
+                s3.upload_file(path, BUCKET, key)
+                done.append(key)
+                log(f"  uploaded s3://{BUCKET}/{key}")
+            except Exception as exc:  # noqa: BLE001
+                log(f"  UPLOAD FAILED {key}: {exc!r}")
+    return done
+
+
 def _maybe_terminate() -> None:
     """If SELF_TERMINATE=1, schedule an OS shutdown (the launcher sets the
     instance's shutdown-behavior to 'terminate') with a short grace for the
@@ -189,20 +229,16 @@ def main() -> None:
             _maybe_terminate()
             sys.exit(rc)
         log(f"--- STEP DONE: {name} in {mins:.1f} min ---")
+        # Checkpoint: push this step's artifacts to S3 immediately so partial
+        # results survive even if a later step fails.
+        step_arts = STEP_ARTIFACTS.get(name)
+        if step_arts:
+            log(f"checkpoint: uploading {name} artifacts ...")
+            _upload_artifacts(step_arts)
+            _ship_once()
 
-    log("=== uploading artifacts to S3 ===")
-    uploaded = []
-    for rel, key in ARTIFACTS.items():
-        path = os.path.join(ROOT, rel)
-        if os.path.exists(path):
-            try:
-                s3.upload_file(path, BUCKET, key)
-                uploaded.append(key)
-                log(f"uploaded s3://{BUCKET}/{key}")
-            except Exception as exc:  # noqa: BLE001
-                log(f"UPLOAD FAILED {key}: {exc!r}")
-        else:
-            log(f"(skip, not produced: {rel})")
+    log("=== final artifact sweep to S3 ===")
+    uploaded = _upload_artifacts(list(ARTIFACTS.items()))
 
     state.update(status="DONE", step=None, uploaded=uploaded)
     log("=== TRAINING RUN COMPLETE ===")
