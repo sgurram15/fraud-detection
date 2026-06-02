@@ -138,6 +138,22 @@ def _capture_dmesg() -> None:
         log(f"(dmesg unavailable: {exc})")
 
 
+def _maybe_terminate() -> None:
+    """If SELF_TERMINATE=1, schedule an OS shutdown (the launcher sets the
+    instance's shutdown-behavior to 'terminate') with a short grace for the
+    final S3 uploads. Makes the detached run fully hands-off: it stops its own
+    bill on completion OR failure."""
+    if os.environ.get("SELF_TERMINATE", "").strip().lower() not in (
+            "1", "true", "yes"):
+        return
+    log("SELF_TERMINATE=1 -> scheduling shutdown in 3 min "
+        "(terminates the instance; grace for final uploads).")
+    try:
+        subprocess.run(["sudo", "shutdown", "-h", "+3"], timeout=15)
+    except Exception as exc:  # noqa: BLE001
+        log(f"(self-terminate failed: {exc})")
+
+
 def main() -> None:
     if not BUCKET:
         print("S3_BUCKET env var required", file=sys.stderr)
@@ -168,7 +184,9 @@ def main() -> None:
             log(f"--- STEP FAILED: {name} rc={rc} after {mins:.1f} min ---")
             _capture_dmesg()
             state.update(status="FAILED", failed_step=name, rc=rc)
+            _stop.set()
             _ship_once()
+            _maybe_terminate()
             sys.exit(rc)
         log(f"--- STEP DONE: {name} in {mins:.1f} min ---")
 
@@ -190,6 +208,7 @@ def main() -> None:
     log("=== TRAINING RUN COMPLETE ===")
     _stop.set()
     _ship_once()
+    _maybe_terminate()
 
 
 if __name__ == "__main__":
@@ -203,4 +222,5 @@ if __name__ == "__main__":
         _capture_dmesg()
         _stop.set()
         _ship_once()
+        _maybe_terminate()
         raise

@@ -22,7 +22,7 @@ import sys
 import time
 from pathlib import Path
 
-from _common import get_env, ssh_connect
+from _common import REGION, get_boto3, get_env, ssh_connect
 
 KEY_PATH = Path.home() / ".ssh" / "fraud-detection-key.pem"
 SSH_USER = "ec2-user"
@@ -53,6 +53,21 @@ def main() -> None:
     local_runner = Path(__file__).resolve().parent / "remote_train.py"
     print(f"Target {ip}; bucket {bucket}.")
 
+    # So the run can terminate its own instance on finish/failure (self-stop).
+    iid = get_env("EC2_INSTANCE_ID")
+    if iid:
+        try:
+            get_boto3().client("ec2", region_name=REGION).\
+                modify_instance_attribute(
+                    InstanceId=iid,
+                    InstanceInitiatedShutdownBehavior={"Value": "terminate"})
+            print(f"set shutdown-behavior=terminate on {iid}")
+        except Exception as exc:  # noqa: BLE001
+            print(f"(could not set shutdown-behavior: {exc})")
+    else:
+        print("(EC2_INSTANCE_ID not in .env — self-terminate may only STOP, "
+              "not terminate; run stop_ec2.py to be sure.)")
+
     client = ssh_connect(ip, KEY_PATH, SSH_USER)
     try:
         print("\n[1/3] git pull (latest committed pipeline code) ...")
@@ -68,6 +83,7 @@ def main() -> None:
         print("\n[3/3] launching detached run (survives SSH/laptop disconnect) ...")
         launch = (
             f"cd {REPO} && S3_BUCKET={bucket} FRAUD_SAMPLE_N=all "
+            f"SELF_TERMINATE=1 "
             f"nohup setsid python3.11 scripts/aws/remote_train.py "
             f">/home/ec2-user/remote_train.boot.log 2>&1 & echo LAUNCHED pid $!"
         )
@@ -76,6 +92,10 @@ def main() -> None:
         alive = _run(client, "pgrep -af remote_train.py | grep -v grep | "
                              "head -2 || echo 'NOT RUNNING — check "
                              "remote_train.boot.log'")
+        # Hard backstop: terminate after 5h even if the runner dies without
+        # self-terminating (e.g. the parent process is itself killed).
+        _run(client, "sudo shutdown -h +300 'fraud-detection backstop' "
+                     "2>/dev/null || echo '(backstop schedule failed)'")
     finally:
         client.close()
 
