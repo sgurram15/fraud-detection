@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import sys
 import time
 from collections import Counter
@@ -27,6 +28,7 @@ from pathlib import Path
 _ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_ROOT))
 
+from src.monitoring import cloudwatch_publisher as _cw
 from src.streaming import (
     audit_writer,
     feature_enricher,
@@ -52,6 +54,50 @@ _REPORT_PATH = _ROOT / "docs" / "pipeline_run_report.json"
 # with the client's real fraud-loss data before production).
 _AVG_FRAUD_LOSS_GBP = 125.0   # value of a prevented fraud (FN cost)
 _FALSE_POS_COST_GBP = 25.0    # cost of a blocked legitimate txn (FP cost)
+
+# C7.3 — CloudWatch metrics are published every _CW_INTERVAL seconds while the
+# pipeline runs, but only when CLOUDWATCH_ENABLED=true (a production run). This
+# keeps the verified local/demo runs free of AWS noise. Publishing always falls
+# back to stdout and is wrapped so monitoring can never crash the pipeline.
+_CW_COMPONENTS = ("features", "model", "agent", "audit", "kafka")
+_CW_INTERVAL = 60.0
+
+
+def _cw_metrics(metrics: dict) -> dict:
+    """Build the cloudwatch_publisher.publish_metrics() dict from the live
+    pipeline metrics. Live proxies (no confirmed labels yet): fraud_rate=HOLD
+    share, false_positive_rate=REVIEW share."""
+    scored = metrics["scored"]
+    d, ag = metrics["decisions"], metrics["agent"]
+    return {
+        "transactions_processed": scored,
+        "fraud_rate": (d["HOLD"] / scored) if scored else 0.0,
+        "false_positive_rate": (d["REVIEW"] / scored) if scored else 0.0,
+        "avg_latency_ms": (metrics["latency_sum_ms"] / scored) if scored
+        else 0.0,
+        "decisions_hold": ag["HOLD_AND_STEP_UP"],
+        "decisions_block": ag["BLOCK"],
+        "decisions_approve": d["APPROVE"],
+        "decisions_review": d["REVIEW"],
+        "daily_fraud_saving_gbp": d["HOLD"] * _AVG_FRAUD_LOSS_GBP,
+        "model_version": "xgboost-baseline-v1",
+    }
+
+
+async def _cw_publish_loop(metrics: dict, stop: asyncio.Event,
+                           interval: float = _CW_INTERVAL) -> None:
+    """Publish current metrics to CloudWatch every `interval` seconds until
+    `stop`. boto3 is blocking, so it runs in a thread; any failure is swallowed
+    (publish_metrics already falls back to stdout and never raises)."""
+    while not stop.is_set():
+        try:
+            await asyncio.to_thread(_cw.publish_metrics, _cw_metrics(metrics))
+        except Exception:  # noqa: BLE001 — telemetry must never kill the run
+            logger.debug("cloudwatch publish skipped", exc_info=True)
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=interval)
+        except asyncio.TimeoutError:
+            pass
 
 
 def _new_metrics() -> dict:
@@ -133,6 +179,19 @@ async def run_pipeline(limit: int | None = None, tps: int | None = None,
         _dashboard_loop(metrics, bus, t0, stop, dashboard_interval))
         if dashboard else None)
 
+    # C7.3 — CloudWatch telemetry (production only; never crashes the run).
+    cw_enabled = os.getenv("CLOUDWATCH_ENABLED", "false").lower() == "true"
+    cw_task = None
+    if cw_enabled:
+        for comp in _CW_COMPONENTS:
+            try:
+                await asyncio.to_thread(
+                    _cw.publish_pipeline_health, "HEALTHY", comp, "startup")
+            except Exception:  # noqa: BLE001
+                logger.debug("cloudwatch health skipped (%s)", comp,
+                             exc_info=True)
+        cw_task = asyncio.create_task(_cw_publish_loop(metrics, stop))
+
     # Producer runs to completion, then we drain each stage in order.
     producer_stats = await transaction_producer.run(bus, limit=limit, tps=tps)
 
@@ -155,6 +214,15 @@ async def run_pipeline(limit: int | None = None, tps: int | None = None,
     stop.set()
     if dash_task:
         await dash_task
+    if cw_task:
+        # Final snapshot then unwind the publisher loop.
+        if cw_enabled:
+            try:
+                await asyncio.to_thread(_cw.publish_metrics,
+                                        _cw_metrics(metrics))
+            except Exception:  # noqa: BLE001
+                logger.debug("final cloudwatch publish skipped", exc_info=True)
+        await cw_task
 
     elapsed = time.perf_counter() - t0
     scored = metrics["scored"]

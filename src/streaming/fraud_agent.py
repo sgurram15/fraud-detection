@@ -1,21 +1,32 @@
-"""C2.5 — Fraud reasoning agent (local Bedrock simulation).
+"""C2.5 / C6.2 — Fraud reasoning agent.
 
 Subscribes to ``transactions_flagged`` (HOLD decisions, score > 0.70) and
 produces a structured reasoning verdict, then publishes a complete audit record
 to ``audit_log``.
 
-Two modes, selected by $AWS_BEDROCK_ENABLED:
-  * unset / false  -> local rule-based reasoner (no network, deterministic).
-  * true           -> Amazon Bedrock Claude Sonnet via boto3 (wired in C6.2).
+Public API (C6 spec):
+  * ``call_bedrock_agent(transaction, score, shap_reasons)`` — Amazon Bedrock
+    Claude Sonnet path via boto3 ``invoke_model``.
+  * ``local_agent(transaction, score, shap_reasons)`` — deterministic
+    rule-based fallback (no network), used for local dev and tests.
+  * ``process_flagged_transaction(transaction, score, shap_reasons)`` — main
+    entry point: tries Bedrock when ``AWS_BEDROCK_ENABLED=true`` (with
+    exponential backoff on throttling), otherwise / on failure uses the local
+    agent. Always returns a valid decision dict.
 
-Both modes emit the same verdict shape:
-  {decision, confidence, reasoning, fca_narrative, alert_fraud_team, draft_sar}
+Verdict shape (both paths):
+  {decision, confidence, reasoning, fca_narrative, alert_fraud_team,
+   draft_sar, estimated_liability_gbp, source, model}
 where decision is one of HOLD_AND_STEP_UP | BLOCK | MONITOR.
+
+NOTE on the model id: the mission spec named ``claude-sonnet-4-20250514``, but
+live verification (2026-05-29) showed Claude 4.x is *inference-profile-only* in
+eu-west-2 — the bare id is not invocable there. The default below is the
+verified EU inference profile; override with $BEDROCK_MODEL_ID.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import sys
@@ -34,207 +45,272 @@ from src.streaming.stream_bus import (
 
 logger = logging.getLogger("agent")
 
-_NEW_ACCOUNT_DAYS = 30  # card age below this counts as a "new account"
-
-# Bedrock config (C6.2). Region eu-west-2 (FCA residency); the EU cross-region
-# inference profile is the default (Claude 4.x models are profile-only — the
-# bare model id is not on-demand invocable in eu-west-2). Override with
-# $BEDROCK_MODEL_ID. Verified working: eu.anthropic.claude-sonnet-4-5-...,
-# anthropic.claude-3-7-sonnet-20250219-v1:0.
+# Region eu-west-2 (FCA residency). EU cross-region inference profile is the
+# default — see module docstring. Override with $BEDROCK_MODEL_ID.
 _BEDROCK_MODEL_ID = os.getenv(
     "BEDROCK_MODEL_ID", "eu.anthropic.claude-sonnet-4-5-20250929-v1:0")
 _BEDROCK_REGION = os.getenv("AWS_DEFAULT_REGION", "eu-west-2")
-_BEDROCK_MAX_RETRIES = 5
-_VALID_DECISIONS = {"HOLD_AND_STEP_UP", "BLOCK", "MONITOR"}
-_VALID_CONFIDENCE = {"HIGH", "MEDIUM", "LOW"}
+
+_VALID_DECISIONS = ["HOLD_AND_STEP_UP", "BLOCK", "MONITOR"]
+_REQUIRED_FIELDS = [
+    "decision", "confidence", "reasoning",
+    "fca_narrative", "alert_fraud_team", "draft_sar",
+]
 
 
-def _is_new_account(event: dict) -> bool:
-    age = event.get("card_age_days", 0) or 0
-    return age < _NEW_ACCOUNT_DAYS
+def call_bedrock_agent(transaction: dict, score: float,
+                       shap_reasons: list) -> dict:
+    """Calls Amazon Bedrock Claude Sonnet and returns a structured decision
+    dict. Raises on any error so the caller can fall back to local_agent()."""
+
+    prompt = f"""You are a fraud detection agent for an
+FCA-regulated UK payment platform operating under PS21/3,
+Consumer Duty, and PSR APP fraud reimbursement rules.
+
+TRANSACTION FLAGGED — fraud probability: {score:.3f}
+
+Transaction details:
+- Amount: £{transaction.get('amount', 0):,.2f}
+- Destination account age: {transaction.get('destination_account_age_days', 0)} days
+- Card velocity last hour: {transaction.get('tx_velocity_1h', 0)} transactions
+- Amount deviation from average: {transaction.get('amt_deviation', 1.0):.1f}x
+- Hour of transaction: {transaction.get('hour_of_day', 12):02d}:00
+- Device type: {transaction.get('device_type', 'unknown')}
+
+Top SHAP signals (fraud drivers):
+{chr(10).join(f"- {r}" for r in shap_reasons[:5])}
+
+FCA context:
+- PSR reimbursement liability applies if fraud confirmed
+- Consumer Duty requires explainable automated decisions
+- PS21/3 requires this decision to be audit-logged
+
+Based on this evidence, choose ONE decision:
+- HOLD_AND_STEP_UP: Hold payment, send step-up
+  authentication to customer. Use when fraud is likely
+  but customer confirmation could resolve it.
+- BLOCK: Block payment immediately, alert fraud team.
+  Use when fraud probability is very high or pattern
+  matches known APP scam typology.
+- MONITOR: Allow payment but flag for analyst review.
+  Use when risk is elevated but not sufficient to hold.
+
+Respond ONLY with valid JSON — no preamble, no explanation
+outside the JSON:
+{{
+  "decision": "HOLD_AND_STEP_UP|BLOCK|MONITOR",
+  "confidence": "HIGH|MEDIUM|LOW",
+  "reasoning": "2-3 sentences plain English explaining
+                the decision for the fraud analyst",
+  "fca_narrative": "1-2 sentences suitable for FCA audit
+                    log — factual, no speculation",
+  "alert_fraud_team": true|false,
+  "draft_sar": true|false,
+  "estimated_liability_gbp": number
+}}"""
+
+    import json
+
+    import boto3
+
+    client = boto3.client('bedrock-runtime', region_name=_BEDROCK_REGION)
+
+    response = client.invoke_model(
+        modelId=_BEDROCK_MODEL_ID,
+        contentType='application/json',
+        accept='application/json',
+        body=json.dumps({
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": 500,
+            "messages": [
+                {"role": "user", "content": prompt}
+            ]
+        })
+    )
+
+    body = json.loads(response['body'].read())
+    usage = body.get('usage', {})
+    logger.info("Bedrock %s tokens in=%s out=%s (txn=%s)", _BEDROCK_MODEL_ID,
+                usage.get('input_tokens'), usage.get('output_tokens'),
+                transaction.get('transaction_id'))
+    text = body['content'][0]['text'].strip()
+
+    # Strip markdown fences if present
+    if text.startswith('```'):
+        text = text.split('```')[1]
+        if text.startswith('json'):
+            text = text[4:]
+
+    result = json.loads(text)
+
+    # Validate required fields
+    for field in _REQUIRED_FIELDS:
+        if field not in result:
+            raise ValueError(f"Missing field: {field}")
+
+    # Validate decision value
+    if result['decision'] not in _VALID_DECISIONS:
+        raise ValueError(f"Invalid decision: {result['decision']}")
+
+    result.setdefault('estimated_liability_gbp',
+                      round(float(transaction.get('amount', 0)) * 0.5, 2))
+    result['source'] = 'bedrock'
+    result['model'] = _BEDROCK_MODEL_ID
+    return result
 
 
-def local_reason(event: dict) -> dict:
-    """Rule-based stand-in for the Bedrock agent (mission C2.5 rules)."""
-    score = float(event.get("score_result", {}).get("fraud_probability", 0.0))
-    amount = float(event.get("amount", 0.0))
-    new_account = _is_new_account(event)
-    top_reasons = event.get("score_result", {}).get("reasons", [])[:3]
-    reason_str = "; ".join(top_reasons) if top_reasons else "model risk signals"
+def local_agent(transaction: dict, score: float,
+                shap_reasons: list) -> dict:
+    """Rule-based fallback when Bedrock is not available.
+    Deterministic — same input always produces same output.
+    Used for local development and testing."""
+    amount = transaction.get('amount', 0)
+    dest_age = transaction.get('destination_account_age_days', 365)
+    velocity = transaction.get('tx_velocity_1h', 0)
+    hour = transaction.get('hour_of_day', 12)
 
-    if score > 0.90:
-        decision, confidence = "BLOCK", "HIGH"
+    # Decision logic mirroring Bedrock reasoning
+    if score >= 0.90:
+        decision = 'BLOCK'
+        confidence = 'HIGH'
         reasoning = (
-            f"Fraud probability {score:.2f} exceeds the 0.90 block threshold. "
-            f"Transaction of £{amount:,.2f} blocked outright. Drivers: "
-            f"{reason_str}."
+            f"Fraud probability {score:.1%} exceeds block "
+            f"threshold. Amount £{amount:,.2f} to "
+            f"{dest_age}-day-old account with velocity "
+            f"{velocity}/hr strongly matches APP fraud pattern."
         )
-        alert, sar = True, True
-    elif new_account:
-        decision, confidence = "HOLD_AND_STEP_UP", "HIGH"
+        alert = True
+        sar = score >= 0.95
+
+    elif score >= 0.70 and dest_age <= 7:
+        decision = 'HOLD_AND_STEP_UP'
+        confidence = 'HIGH'
         reasoning = (
-            f"Fraud probability {score:.2f} on a new account "
-            f"(card age < {_NEW_ACCOUNT_DAYS} days) for £{amount:,.2f}. "
-            f"Holding for step-up authentication. Drivers: {reason_str}."
+            f"New destination account ({dest_age} days) "
+            f"combined with {score:.1%} fraud probability "
+            f"warrants step-up authentication before release."
         )
-        alert, sar = True, False
+        alert = False
+        sar = False
+
+    elif score >= 0.70 and (hour <= 5 or velocity >= 5):
+        decision = 'HOLD_AND_STEP_UP'
+        confidence = 'MEDIUM'
+        reasoning = (
+            f"Elevated fraud probability {score:.1%} "
+            f"with late-night timing or high velocity "
+            f"warrants customer confirmation."
+        )
+        alert = False
+        sar = False
+
     else:
-        decision, confidence = "HOLD_AND_STEP_UP", "MEDIUM"
+        decision = 'MONITOR'
+        confidence = 'MEDIUM'
         reasoning = (
-            f"Fraud probability {score:.2f} on an established card for "
-            f"£{amount:,.2f}. Step-up authentication requested before "
-            f"settlement. Drivers: {reason_str}."
+            f"Score {score:.1%} above threshold but "
+            f"pattern does not meet hold criteria. "
+            f"Flagged for analyst review."
         )
-        alert, sar = False, False
+        alert = False
+        sar = False
 
     fca_narrative = (
-        f"Automated screening assigned a fraud probability of {score:.2f} "
-        f"(operating threshold "
-        f"{event.get('score_result', {}).get('threshold_used', 'n/a')}). "
-        f"Decision: {decision} (confidence {confidence}). The principal "
-        f"contributing factors were: {reason_str}. This explanation is "
-        f"retained for the customer and for FCA audit (Consumer Duty / "
-        f"UK GDPR Art. 22)."
+        f"Automated decision: {decision}. "
+        f"Fraud probability: {score:.3f}. "
+        f"Primary signals: {'; '.join(shap_reasons[:3])}. "
+        f"Rule-based local agent (Bedrock unavailable)."
     )
+
     return {
-        "decision": decision,
-        "confidence": confidence,
-        "reasoning": reasoning,
-        "fca_narrative": fca_narrative,
-        "alert_fraud_team": alert,
-        "draft_sar": sar,
-        "agent_mode": "local",
+        'decision': decision,
+        'confidence': confidence,
+        'reasoning': reasoning,
+        'fca_narrative': fca_narrative,
+        'alert_fraud_team': alert,
+        'draft_sar': sar,
+        'estimated_liability_gbp': round(amount * 0.5, 2),
+        'source': 'local_rules',
+        'model': 'rule_based_v1',
     }
 
 
-def build_prompt(event: dict) -> str:
-    """Compose the fraud-reasoning prompt for one flagged transaction."""
-    sr = event.get("score_result", {})
-    reasons = sr.get("reasons", [])[:5]
-    return (
-        "You are a fraud analyst for a UK Payment Service Provider, operating "
-        "under FCA Consumer Duty and UK GDPR Art. 22 (right to an explanation "
-        "of automated decisions). A transaction has been flagged by the "
-        "scoring model. Decide the action.\n\n"
-        f"Transaction: id={event.get('transaction_id')}, "
-        f"amount=£{event.get('amount')}, device={event.get('device_type')}, "
-        f"hour={event.get('hour_of_day')}, card_age_days="
-        f"{event.get('card_age_days')}, velocity_1h="
-        f"{event.get('tx_velocity_1h')}, velocity_24h="
-        f"{event.get('tx_velocity_24h')}.\n"
-        f"Model fraud probability: {sr.get('fraud_probability')} "
-        f"(threshold {sr.get('threshold_used')}).\n"
-        f"Top model reason codes: {reasons}\n\n"
-        "Respond with ONLY a JSON object, no prose, with exactly these keys:\n"
-        '{"decision": "HOLD_AND_STEP_UP|BLOCK|MONITOR", '
-        '"confidence": "HIGH|MEDIUM|LOW", '
-        '"reasoning": "plain-English paragraph for the analyst", '
-        '"fca_narrative": "explanation suitable for the FCA audit log", '
-        '"alert_fraud_team": true|false, "draft_sar": true|false}'
-    )
+def process_flagged_transaction(transaction: dict,
+                                score: float,
+                                shap_reasons: list) -> dict:
+    """Main entry point. Tries Bedrock first, falls back to local.
+    Always returns a valid decision dict.
+    Handles exponential backoff on Bedrock throttling."""
+
+    use_bedrock = os.getenv('AWS_BEDROCK_ENABLED',
+                            'false').lower() == 'true'
+
+    if use_bedrock:
+        for attempt in range(3):
+            try:
+                result = call_bedrock_agent(
+                    transaction, score, shap_reasons
+                )
+                return result
+            except Exception as e:  # noqa: BLE001
+                if 'ThrottlingException' in str(e):
+                    wait = (2 ** attempt) * 1.0
+                    time.sleep(wait)
+                    continue
+                print(f"Bedrock error: {e} — using local agent")
+                break
+
+    return local_agent(transaction, score, shap_reasons)
 
 
-def parse_bedrock_response(text: str) -> dict:
-    """Extract and validate the agent verdict JSON from the model's text.
-    Raises ValueError if it is missing required keys or invalid values."""
-    start, end = text.find("{"), text.rfind("}")
-    if start == -1 or end == -1 or end <= start:
-        raise ValueError("no JSON object in Bedrock response")
-    verdict = json.loads(text[start:end + 1])
-    if verdict.get("decision") not in _VALID_DECISIONS:
-        raise ValueError(f"invalid decision: {verdict.get('decision')!r}")
-    if verdict.get("confidence") not in _VALID_CONFIDENCE:
-        raise ValueError(f"invalid confidence: {verdict.get('confidence')!r}")
-    for key in ("reasoning", "fca_narrative"):
-        if not str(verdict.get(key, "")).strip():
-            raise ValueError(f"empty {key}")
-    verdict.setdefault("alert_fraud_team", verdict["decision"] != "MONITOR")
-    verdict.setdefault("draft_sar", verdict["decision"] == "BLOCK")
-    verdict["agent_mode"] = "bedrock"
-    return verdict
-
-
-def bedrock_reason(event: dict) -> dict:
-    """Amazon Bedrock Claude Sonnet path (C6.2): boto3 bedrock-runtime Converse
-    API with exponential backoff on throttling and per-call token logging."""
-    import boto3
-    from botocore.exceptions import ClientError
-
-    client = boto3.client("bedrock-runtime", region_name=_BEDROCK_REGION)
-    messages = [{"role": "user",
-                 "content": [{"text": build_prompt(event)}]}]
-    delay = 1.0
-    last_exc: Exception | None = None
-    for attempt in range(1, _BEDROCK_MAX_RETRIES + 1):
-        try:
-            resp = client.converse(
-                modelId=_BEDROCK_MODEL_ID,
-                messages=messages,
-                inferenceConfig={"maxTokens": 512, "temperature": 0.0},
-            )
-            text = resp["output"]["message"]["content"][0]["text"]
-            usage = resp.get("usage", {})
-            logger.info("Bedrock %s tokens in=%s out=%s total=%s (txn=%s)",
-                        _BEDROCK_MODEL_ID, usage.get("inputTokens"),
-                        usage.get("outputTokens"), usage.get("totalTokens"),
-                        event.get("transaction_id"))
-            return parse_bedrock_response(text)
-        except ClientError as exc:
-            code = exc.response.get("Error", {}).get("Code", "")
-            last_exc = exc
-            if code in ("ThrottlingException", "TooManyRequestsException",
-                        "ServiceUnavailableException") and \
-                    attempt < _BEDROCK_MAX_RETRIES:
-                logger.warning("Bedrock throttled (%s); retry %d in %.1fs",
-                               code, attempt, delay)
-                time.sleep(delay)
-                delay *= 2  # exponential backoff
-                continue
-            raise
-    raise RuntimeError(f"Bedrock failed after {_BEDROCK_MAX_RETRIES} attempts: "
-                       f"{last_exc}")
-
-
-def reason(event: dict) -> dict:
-    if os.getenv("AWS_BEDROCK_ENABLED", "").lower() == "true":
-        try:
-            return bedrock_reason(event)
-        except Exception as exc:
-            logger.warning("Bedrock path failed (%s); using local reasoner",
-                           exc)
-    verdict = local_reason(event)
-    if verdict["agent_mode"] == "local":
-        logger.debug("[LOCAL AGENT] Decision made without Bedrock")
-    return verdict
+def _agent_transaction(event: dict) -> dict:
+    """Build the flat transaction dict the agent functions expect from a
+    streaming event. destination_account_age falls back to card age (the IEEE
+    dataset has no shipping/destination address — see model card)."""
+    txn = dict(event)
+    if "destination_account_age_days" not in txn:
+        txn["destination_account_age_days"] = event.get("card_age_days", 365)
+    return txn
 
 
 async def run(bus: StreamBus, metrics: dict | None = None) -> dict:
-    """Consume flagged transactions, reason, write enriched audit record.
+    """Consume flagged transactions, reason via process_flagged_transaction(),
+    write an enriched audit record to ``audit_log``.
 
     Updates ``metrics["agent"]`` live (per-verdict counts) when provided."""
+    import time as _time
+    from datetime import datetime, timezone
+
     handled = 0
     async for event in bus.subscribe(TRANSACTIONS_FLAGGED):
         if event is SHUTDOWN:
             bus.done(TRANSACTIONS_FLAGGED)
             break
         try:
-            verdict = reason(event)
+            sr = event.get("score_result", {})
+            score = float(sr.get("fraud_probability", 0.0))
+            shap_reasons = sr.get("reasons", [])
+            t0 = _time.perf_counter()
+            verdict = process_flagged_transaction(
+                _agent_transaction(event), score, shap_reasons)
+            processing_ms = round((_time.perf_counter() - t0) * 1000.0, 3)
             if metrics is not None:
                 metrics["agent"][verdict["decision"]] += 1
+            # Audit record = full decision dict + the C6.2 required fields.
             await bus.publish(AUDIT_LOG, {
-                "transaction_id": event["transaction_id"],
+                **verdict,
                 "stage": "agent",
-                "decision": event.get("score_result", {}).get("decision"),
-                "fraud_probability": event.get("score_result", {})
-                .get("fraud_probability"),
-                "agent_verdict": verdict,
-                "fca_explanation": event.get("score_result", {})
-                .get("fca_explanation"),
+                "transaction_id": event["transaction_id"],
+                "fraud_probability": score,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "processing_time_ms": processing_ms,
+                "fca_explanation": sr.get("fca_explanation"),
             })
             handled += 1
-            logger.debug("[%s] agent %s -> %s (%s)", time.strftime("%H:%M:%S"),
-                         event["transaction_id"], verdict["decision"],
-                         verdict["confidence"])
+            logger.debug("[%s] agent %s -> %s (%s) via %s",
+                         time.strftime("%H:%M:%S"), event["transaction_id"],
+                         verdict["decision"], verdict["confidence"],
+                         verdict["source"])
         finally:
             bus.done(TRANSACTIONS_FLAGGED)
     return {"agent_decisions": handled}

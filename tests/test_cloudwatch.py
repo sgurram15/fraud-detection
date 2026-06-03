@@ -1,26 +1,60 @@
-"""C7.3 — CloudWatch publisher test.
+"""C7.4 — CloudWatch publisher test.
 
-ALWAYS (no AWS): the metric-data builder, the report->metrics mapper, and the
-stdout fallback when credentials are absent.
-
-LIVE (opt-in: CLOUDWATCH_LIVE_TEST=true + credentials): publish 10 test metric
-points, read them back, and verify the FraudDetectionPOC dashboard exists. This
-is gated behind an explicit flag so a normal local run never calls AWS.
+All four tests run WITHOUT touching real AWS. boto3 is replaced with a fake so
+the no-credentials fallback path and the metric payload are exercised
+deterministically regardless of any ambient AWS credentials.
 
 Run: python tests/test_cloudwatch.py
 """
 
 from __future__ import annotations
 
-import os
+import io
 import sys
-import time
+from contextlib import contextmanager, redirect_stdout
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT))
 
 from src.monitoring import cloudwatch_publisher as cw
+
+
+class _RaisingBoto3:
+    """Stands in for the boto3 module; simulates 'no AWS credentials'."""
+
+    def client(self, *a, **k):  # noqa: ANN002, ANN003
+        raise RuntimeError("Unable to locate credentials")
+
+
+class _CapturingClient:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def put_metric_data(self, **kwargs):  # noqa: ANN003
+        self.calls.append(kwargs)
+        return {}
+
+
+class _CapturingBoto3:
+    def __init__(self) -> None:
+        self.client_obj = _CapturingClient()
+
+    def client(self, *a, **k):  # noqa: ANN002, ANN003
+        return self.client_obj
+
+
+@contextmanager
+def _fake_boto3(fake):
+    real = sys.modules.get("boto3")
+    sys.modules["boto3"] = fake
+    try:
+        yield fake
+    finally:
+        if real is not None:
+            sys.modules["boto3"] = real
+        else:
+            sys.modules.pop("boto3", None)
 
 
 def _result(name: str, passed: bool, reason: str = "") -> bool:
@@ -31,93 +65,80 @@ def _result(name: str, passed: bool, reason: str = "") -> bool:
     return passed
 
 
-def test_build_metric_data() -> bool:
-    metrics = {"TransactionsProcessed": 500, "FraudRate": 1.2,
-               "EndToEndLatencyMs": 27.0, "DailyFraudSaving_GBP": 296445,
-               "AgentDecisions_Hold": 6, "AgentDecisions_Block": 0,
-               "FalsePositiveRate": 75.2, "UnknownMetric": 1, "Missing": None}
-    data = cw.build_metric_data(metrics)
-    names = {d["MetricName"] for d in data}
-    units_ok = all(d["Unit"] == cw._UNITS[d["MetricName"]] for d in data)
-    ok = (len(data) == 7 and "UnknownMetric" not in names
-          and "Missing" not in names and units_ok)
-    return _result("build_metric_data: 7 known metrics, correct units", ok,
-                   f"emitted {sorted(names)}")
-
-
-def test_metrics_from_report() -> bool:
-    report = {
-        "decisions": {"APPROVE": 100, "REVIEW": 380, "HOLD": 20},
-        "agent_decisions": {"HOLD_AND_STEP_UP": 18, "BLOCK": 2, "MONITOR": 0},
-        "avg_latency_ms": 27.0,
-        "audit_summary": {"fraud_rate": 0.04},
-        "est_daily_saving_gbp": 296445,
-    }
-    m = cw.metrics_from_report(report)
-    ok = (m["TransactionsProcessed"] == 500
-          and abs(m["FraudRate"] - 4.0) < 1e-6
-          and abs(m["FalsePositiveRate"] - 76.0) < 1e-6  # 380/500*100
-          and m["AgentDecisions_Block"] == 2
-          and m["DailyFraudSaving_GBP"] == 296445)
-    return _result("metrics_from_report maps a pipeline report", ok, str(m))
-
-
-def test_stdout_fallback() -> bool:
-    pub = cw.CloudWatchPublisher()
-    pub._available = False  # force the no-credentials path
-    sent = pub.publish({"TransactionsProcessed": 10})
-    return _result("publish falls back to stdout without credentials",
-                   sent is False)
-
-
-def test_live() -> bool | None:
-    if os.getenv("CLOUDWATCH_LIVE_TEST", "").lower() != "true":
-        print("[SKIP] CLOUDWATCH_LIVE_TEST!=true — live CloudWatch test "
-              "skipped (avoids unsolicited AWS calls).")
-        return None
+def test_publish_no_credentials() -> bool:
+    sample = {"transactions_processed": 500, "fraud_rate": 0.012,
+              "false_positive_rate": 0.752, "avg_latency_ms": 27.0,
+              "decisions_hold": 6, "daily_fraud_saving_gbp": 296445}
+    buf = io.StringIO()
+    raised = False
     try:
-        import boto3
-    except ImportError:
-        print("[SKIP] boto3 not installed.")
-        return None
-
-    pub = cw.CloudWatchPublisher()
-    if not pub.available():
-        print("[SKIP] no AWS credentials available.")
-        return None
-
-    client = boto3.client("cloudwatch", region_name=cw.REGION)
-    for i in range(10):
-        pub.publish({"TransactionsProcessed": 100 + i})
-        time.sleep(0.2)
-    # Read back (metrics take a moment to be queryable).
-    time.sleep(5)
-    from datetime import datetime, timedelta, timezone
-    stats = client.get_metric_statistics(
-        Namespace=cw.NAMESPACE, MetricName="TransactionsProcessed",
-        StartTime=datetime.now(timezone.utc) - timedelta(minutes=5),
-        EndTime=datetime.now(timezone.utc), Period=60, Statistics=["Sum"])
-    has_data = len(stats.get("Datapoints", [])) > 0
-    try:
-        client.get_dashboard(DashboardName="FraudDetectionPOC")
-        dash_ok = True
+        with _fake_boto3(_RaisingBoto3()), redirect_stdout(buf):
+            sent = cw.publish_metrics(sample)
     except Exception:  # noqa: BLE001
-        dash_ok = False
-    return _result("live: metrics published+readable and dashboard exists",
-                   has_data and dash_ok,
-                   f"datapoints={len(stats.get('Datapoints', []))} "
-                   f"dashboard={dash_ok}")
+        raised = True
+        sent = None
+    out = buf.getvalue()
+    ok = (raised is False and sent is False and "METRICS" in out)
+    return _result("publish_metrics returns False + logs locally, no creds",
+                   ok, f"sent={sent} raised={raised} out={out!r}")
+
+
+def test_log_locally_format() -> bool:
+    metrics = {"transactions_processed": 500, "fraud_rate": 0.04,
+               "false_positive_rate": 0.10, "avg_latency_ms": 27.4,
+               "decisions_hold": 6, "daily_fraud_saving_gbp": 296445}
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        cw._log_locally(metrics)
+    out = buf.getvalue()
+    ok = ("METRICS" in out and "4.0%" in out          # fraud_rate as percent
+          and "27ms" in out                            # latency as integer
+          and "£296,445" in out)                       # saving as £ amount
+    return _result("_log_locally formats METRICS/percent/int-ms/£", ok,
+                   repr(out))
+
+
+def test_health_fallback() -> bool:
+    raised = False
+    buf = io.StringIO()
+    try:
+        with _fake_boto3(_RaisingBoto3()), redirect_stdout(buf):
+            sent = cw.publish_pipeline_health("HEALTHY", "model")
+    except Exception:  # noqa: BLE001
+        raised = True
+        sent = None
+    ok = (raised is False and sent is False)
+    return _result("publish_pipeline_health returns False, no raise, no creds",
+                   ok, f"sent={sent} raised={raised}")
+
+
+def test_missing_keys_default_zero() -> bool:
+    raised = False
+    with _fake_boto3(_CapturingBoto3()) as fake:
+        try:
+            sent = cw.publish_metrics({})  # empty dict — every key missing
+        except Exception:  # noqa: BLE001
+            raised = True
+            sent = None
+        data = fake.client_obj.calls[0]["MetricData"] if \
+            fake.client_obj.calls else []
+    all_zero = len(data) == 7 and all(d["Value"] == 0 for d in data)
+    ok = (raised is False and sent is True and all_zero)
+    return _result("publish_metrics({}) doesn't crash; all 7 values default 0",
+                   ok, f"sent={sent} raised={raised} "
+                       f"values={[d['Value'] for d in data]}")
 
 
 def main() -> int:
     print("=" * 64)
-    print("CloudWatch publisher test suite")
+    print("CloudWatch publisher test suite (C7.4)")
     print("=" * 64)
-    results = [test_build_metric_data(), test_metrics_from_report(),
-               test_stdout_fallback()]
-    live = test_live()
-    if live is not None:
-        results.append(live)
+    results = [
+        test_publish_no_credentials(),
+        test_log_locally_format(),
+        test_health_fallback(),
+        test_missing_keys_default_zero(),
+    ]
     print("-" * 64)
     print(f"{sum(results)}/{len(results)} tests passed")
     return 0 if all(results) else 1

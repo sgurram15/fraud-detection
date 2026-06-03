@@ -69,14 +69,20 @@ _DEMO_TXNS = [
      _txn("DEMO-1", amount=42.50, device_type="desktop", hour_of_day=14,
           tx_velocity_1h=0, tx_velocity_24h=2, amt_deviation=1.0,
           card_age_days=600)),
-    ("2. Suspicious (new account, 10x average, late night)",
-     _txn("DEMO-2", amount=1000.0, device_type="mobile", hour_of_day=2,
-          tx_velocity_1h=3, tx_velocity_24h=6, amt_deviation=10.0,
-          card_age_days=2, is_late_night=True)),
-    ("3. Definite fraud (new account, 20x average, high velocity, 3am)",
-     _txn("DEMO-3", amount=5000.0, device_type="mobile", hour_of_day=3,
-          tx_velocity_1h=9, tx_velocity_24h=18, amt_deviation=20.0,
-          card_age_days=1, is_late_night=True)),
+    # DEMO-2 / DEMO-3 feature values are HOLD-producing on the /score API
+    # surface, identified empirically by scripts/find_demo_thresholds.py.
+    # (The model leans on the full 417-col IEEE vector; over the 18-feature API
+    # surface the score is not intuitively monotonic — see that script's
+    # docstring and docs/model_card.md. card_age≈60d + sustained 24h velocity +
+    # mobile + late-night is the reliable HOLD region.)
+    ("2. Suspicious (new account, sustained velocity, late night)",
+     _txn("DEMO-2", amount=1500.0, device_type="mobile", hour_of_day=3,
+          tx_velocity_1h=2, tx_velocity_24h=8, amt_deviation=2.0,
+          card_age_days=60, is_late_night=True)),
+    ("3. High-risk (large amount, sustained velocity, 3am)",
+     _txn("DEMO-3", amount=2500.0, device_type="mobile", hour_of_day=3,
+          tx_velocity_1h=4, tx_velocity_24h=8, amt_deviation=2.0,
+          card_age_days=60, is_late_night=True)),
     ("4. Edge case (high amount, long-standing card, trusted device)",
      _txn("DEMO-4", amount=3000.0, device_type="desktop", hour_of_day=15,
           tx_velocity_1h=1, tx_velocity_24h=3, amt_deviation=2.0,

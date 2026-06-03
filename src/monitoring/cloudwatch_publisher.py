@@ -1,150 +1,184 @@
 """C7.1 — CloudWatch custom-metrics publisher.
 
 Publishes the pipeline's operational metrics to the CloudWatch namespace
-``FraudDetection/Pipeline``. Intended to be called every ~60s while the
-pipeline runs (see :func:`publish_periodic`). When AWS credentials / boto3 are
-unavailable it logs the metrics to stdout instead, so it is safe to wire into
-the local pipeline.
+``FraudDetection/Pipeline``. Designed to be called every ~60s while the
+pipeline runs. When AWS credentials / boto3 are unavailable it logs the metrics
+to stdout instead and returns False — it never raises, so it is safe to wire
+into the local pipeline (monitoring must never crash the pipeline).
 
-Metrics (name -> unit):
-  TransactionsProcessed   Count
-  FraudRate               Percent
-  FalsePositiveRate       Percent
-  EndToEndLatencyMs       Milliseconds
-  AgentDecisions_Hold     Count
-  AgentDecisions_Block    Count
-  DailyFraudSaving_GBP    None
+Public API (C7 spec):
+  * ``publish_metrics(metrics: dict) -> bool``
+  * ``publish_pipeline_health(status, component, detail='') -> bool``
+  * ``_log_locally(metrics: dict)`` — stdout fallback
+  * ``metrics_from_report(report: dict) -> dict`` — adapt a run_pipeline report
 """
 
 from __future__ import annotations
 
-import logging
 import os
-import sys
-import time
-from pathlib import Path
-
-_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(_ROOT))
-
-logger = logging.getLogger("cloudwatch")
+from datetime import datetime
 
 NAMESPACE = "FraudDetection/Pipeline"
 REGION = os.getenv("AWS_DEFAULT_REGION", "eu-west-2")
 
-# metric name -> CloudWatch unit
-_UNITS = {
-    "TransactionsProcessed": "Count",
-    "FraudRate": "Percent",
-    "FalsePositiveRate": "Percent",
-    "EndToEndLatencyMs": "Milliseconds",
-    "AgentDecisions_Hold": "Count",
-    "AgentDecisions_Block": "Count",
-    "DailyFraudSaving_GBP": "None",
-}
+
+def publish_metrics(metrics: dict) -> bool:
+    """Publishes pipeline metrics to CloudWatch.
+
+    metrics dict keys:
+      transactions_processed: int
+      fraud_rate: float (0-1)
+      false_positive_rate: float (0-1)
+      avg_latency_ms: float
+      decisions_hold: int
+      decisions_block: int
+      decisions_approve: int
+      decisions_review: int
+      daily_fraud_saving_gbp: float
+      model_version: str
+
+    Returns True if published, False if CloudWatch unavailable.
+    Falls back to stdout logging silently."""
+
+    metric_data = [
+        {
+            'MetricName': 'TransactionsProcessed',
+            'Value': metrics.get('transactions_processed', 0),
+            'Unit': 'Count',
+            'Timestamp': datetime.utcnow(),
+        },
+        {
+            'MetricName': 'FraudRate',
+            'Value': metrics.get('fraud_rate', 0) * 100,
+            'Unit': 'Percent',
+            'Timestamp': datetime.utcnow(),
+        },
+        {
+            'MetricName': 'FalsePositiveRate',
+            'Value': metrics.get('false_positive_rate', 0) * 100,
+            'Unit': 'Percent',
+            'Timestamp': datetime.utcnow(),
+        },
+        {
+            'MetricName': 'AvgLatencyMs',
+            'Value': metrics.get('avg_latency_ms', 0),
+            'Unit': 'Milliseconds',
+            'Timestamp': datetime.utcnow(),
+        },
+        {
+            'MetricName': 'DecisionsHold',
+            'Value': metrics.get('decisions_hold', 0),
+            'Unit': 'Count',
+            'Timestamp': datetime.utcnow(),
+        },
+        {
+            'MetricName': 'DecisionsBlock',
+            'Value': metrics.get('decisions_block', 0),
+            'Unit': 'Count',
+            'Timestamp': datetime.utcnow(),
+        },
+        {
+            'MetricName': 'DailyFraudSavingGBP',
+            'Value': metrics.get('daily_fraud_saving_gbp', 0),
+            'Unit': 'None',
+            'Timestamp': datetime.utcnow(),
+        },
+    ]
+
+    try:
+        import boto3
+        client = boto3.client('cloudwatch', region_name=REGION)
+        client.put_metric_data(
+            Namespace=NAMESPACE,
+            MetricData=metric_data,
+        )
+        return True
+    except Exception as e:  # noqa: BLE001
+        # Silent fallback — log to stdout, never crash pipeline
+        print(f"[CloudWatch] Unavailable ({e}) — "
+              f"metrics logged locally only")
+        _log_locally(metrics)
+        return False
 
 
-def build_metric_data(metrics: dict) -> list[dict]:
-    """Map a flat {metric_name: value} dict to CloudWatch MetricData. Only
-    known metric names are emitted; unknowns are ignored."""
-    out: list[dict] = []
-    for name, unit in _UNITS.items():
-        if name in metrics and metrics[name] is not None:
-            out.append({
-                "MetricName": name,
-                "Value": float(metrics[name]),
-                "Unit": unit,
-            })
-    return out
+def _log_locally(metrics: dict):
+    """Stdout fallback when CloudWatch unavailable."""
+    ts = datetime.utcnow().strftime('%H:%M:%S')
+    print(f"[{ts}] METRICS | "
+          f"txns={metrics.get('transactions_processed', 0)} | "
+          f"fraud_rate={metrics.get('fraud_rate', 0):.1%} | "
+          f"fpr={metrics.get('false_positive_rate', 0):.1%} | "
+          f"latency={metrics.get('avg_latency_ms', 0):.0f}ms | "
+          f"hold={metrics.get('decisions_hold', 0)} | "
+          f"saving=£{metrics.get('daily_fraud_saving_gbp', 0):,.0f}")
+
+
+def publish_pipeline_health(status: str,
+                            component: str,
+                            detail: str = '') -> bool:
+    """Publishes pipeline component health events.
+    status: HEALTHY | DEGRADED | DOWN
+    component: kafka | features | model | agent | audit"""
+    try:
+        import boto3
+        client = boto3.client('cloudwatch', region_name=REGION)
+        client.put_metric_data(
+            Namespace=NAMESPACE,
+            MetricData=[{
+                'MetricName': f'ComponentHealth_{component}',
+                'Value': 1 if status == 'HEALTHY' else 0,
+                'Unit': 'Count',
+                'Dimensions': [
+                    {'Name': 'Status', 'Value': status},
+                    {'Name': 'Component', 'Value': component},
+                ],
+                'Timestamp': datetime.utcnow(),
+            }],
+        )
+        return True
+    except Exception as e:  # noqa: BLE001
+        print(f"[CloudWatch] Health publish failed: {e}")
+        return False
 
 
 def metrics_from_report(report: dict) -> dict:
-    """Derive the publishable metrics from a run_pipeline report dict."""
+    """Derive the publish_metrics() dict from a run_pipeline report. Without
+    confirmed labels, the REVIEW share is used as a proxy for FP pressure."""
     decisions = report.get("decisions", {})
     agent = report.get("agent_decisions", {})
     processed = sum(decisions.values())
     review = decisions.get("REVIEW", 0)
     audit = report.get("audit_summary", {})
     return {
-        "TransactionsProcessed": processed,
-        "FraudRate": (audit.get("fraud_rate", 0.0) * 100.0),
-        # Without confirmed labels, REVIEW share is a proxy for FP pressure.
-        "FalsePositiveRate": (review / processed * 100.0) if processed else 0.0,
-        "EndToEndLatencyMs": report.get("avg_latency_ms", 0.0),
-        "AgentDecisions_Hold": agent.get("HOLD_AND_STEP_UP", 0),
-        "AgentDecisions_Block": agent.get("BLOCK", 0),
-        "DailyFraudSaving_GBP": report.get("est_daily_saving_gbp", 0.0),
+        "transactions_processed": processed,
+        "fraud_rate": audit.get("fraud_rate", 0.0),
+        "false_positive_rate": (review / processed) if processed else 0.0,
+        "avg_latency_ms": report.get("avg_latency_ms", 0.0),
+        "decisions_hold": agent.get("HOLD_AND_STEP_UP", 0),
+        "decisions_block": agent.get("BLOCK", 0),
+        "decisions_approve": decisions.get("APPROVE", 0),
+        "decisions_review": review,
+        "daily_fraud_saving_gbp": report.get("est_daily_saving_gbp", 0.0),
+        "model_version": report.get("model_version", "xgboost-baseline-v1"),
     }
-
-
-class CloudWatchPublisher:
-    def __init__(self, region: str = REGION) -> None:
-        self.region = region
-        self._client = None
-        self._available: bool | None = None
-
-    def _get_client(self):
-        if self._client is None:
-            import boto3
-            self._client = boto3.client("cloudwatch", region_name=self.region)
-        return self._client
-
-    def available(self) -> bool:
-        """True if boto3 + credentials are usable; cached after first check."""
-        if self._available is None:
-            try:
-                import boto3
-                self._available = (
-                    boto3.Session().get_credentials() is not None)
-            except ImportError:
-                self._available = False
-        return self._available
-
-    def publish(self, metrics: dict) -> bool:
-        """Publish metrics. Returns True if sent to CloudWatch, False if it
-        fell back to stdout logging."""
-        data = build_metric_data(metrics)
-        if not self.available():
-            logger.info("[CloudWatch stdout-only] %s: %s", NAMESPACE,
-                        {d["MetricName"]: d["Value"] for d in data})
-            return False
-        self._get_client().put_metric_data(Namespace=NAMESPACE,
-                                           MetricData=data)
-        logger.info("Published %d metrics to %s", len(data), NAMESPACE)
-        return True
-
-
-def publish_periodic(get_metrics, interval: int = 60, stop=None) -> None:
-    """Publish every `interval` seconds until `stop` (a threading.Event or any
-    object with is_set()) is set. `get_metrics` is a no-arg callable returning
-    the current metrics dict."""
-    pub = CloudWatchPublisher()
-    while not (stop and stop.is_set()):
-        try:
-            pub.publish(get_metrics())
-        except Exception:  # noqa: BLE001 — never let telemetry kill the run
-            logger.exception("metric publish failed")
-        if stop is not None:
-            stop.wait(interval)  # type: ignore[attr-defined]
-        else:
-            time.sleep(interval)
 
 
 def main() -> int:
     import json
-    logging.basicConfig(level=logging.INFO,
-                        format="%(levelname)s %(name)s: %(message)s")
-    report_path = _ROOT / "docs" / "pipeline_run_report.json"
+    import sys
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[2]
+    report_path = root / "docs" / "pipeline_run_report.json"
     if not report_path.exists():
         print("No pipeline_run_report.json — run the pipeline first.")
         return 1
     report = json.loads(report_path.read_text(encoding="utf-8"))
-    pub = CloudWatchPublisher()
-    sent = pub.publish(metrics_from_report(report))
+    sent = publish_metrics(metrics_from_report(report))
     print("Published to CloudWatch." if sent
           else "Logged to stdout (no AWS credentials).")
     return 0
 
 
 if __name__ == "__main__":
+    import sys
     sys.exit(main())

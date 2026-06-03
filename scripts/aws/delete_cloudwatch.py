@@ -25,10 +25,10 @@ load_dotenv_into_environ()  # make .env AWS creds available to boto3
 DASHBOARD_NAME = "FraudDetectionPOC"
 SNS_TOPIC_NAME = "fraud-detection-alerts"
 ALARM_NAMES = [
-    "FraudDetection-FPR-High",
-    "FraudDetection-Latency-High",
-    "FraudDetection-FraudRate-Zero",
-    "FraudDetection-Blocks-High",
+    "FraudDetection-HighFPR",
+    "FraudDetection-HighLatency",
+    "FraudDetection-ZeroFraudRate",
+    "FraudDetection-ExcessiveBlocks",
 ]
 
 

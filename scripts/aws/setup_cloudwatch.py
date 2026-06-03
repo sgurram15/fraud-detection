@@ -4,10 +4,10 @@ Creates an SNS topic (subscribing ALERT_EMAIL from .env), four alarms on the
 FraudDetection/Pipeline metrics, and a dashboard 'FraudDetectionPOC'.
 
 Alarms:
-  * FalsePositiveRate > 5%            (commercial constraint breached)
-  * EndToEndLatencyMs > 1000ms        (latency SLA breach)
-  * FraudRate == 0 for > 1 hour       (model/feature pipeline likely failed)
-  * AgentDecisions_Block > 100 / 1h   (abnormally high block volume)
+  * FraudDetection-HighFPR        FalsePositiveRate > 5% (2x 5-min periods)
+  * FraudDetection-HighLatency    AvgLatencyMs > 1000ms (latency SLA breach)
+  * FraudDetection-ZeroFraudRate  FraudRate <= 0 for 1h (model likely failed)
+  * FraudDetection-ExcessiveBlocks  DecisionsBlock > 100 / 1h (abnormal volume)
 
 Cost is minimal (~£0.10/month for the alarms + custom metrics). Makes no AWS
 calls until you confirm at the prompt (or pass --yes).
@@ -53,41 +53,51 @@ def _alarms(topic_arn: str) -> list[dict]:
     common = {"Namespace": NAMESPACE, "ActionsEnabled": True,
               "AlarmActions": [topic_arn]}
     return [
-        {**common, "AlarmName": "FraudDetection-FPR-High",
+        {**common, "AlarmName": "FraudDetection-HighFPR",
          "MetricName": "FalsePositiveRate", "Statistic": "Average",
-         "Period": 300, "EvaluationPeriods": 1, "Threshold": 5.0,
+         "Period": 300, "EvaluationPeriods": 2, "Threshold": 5.0,
          "ComparisonOperator": "GreaterThanThreshold",
-         "AlarmDescription": "False-positive rate above the 5% commercial cap"},
-        {**common, "AlarmName": "FraudDetection-Latency-High",
-         "MetricName": "EndToEndLatencyMs", "Statistic": "Average",
+         "TreatMissingData": "notBreaching",
+         "AlarmDescription": "FPR exceeds 5% commercial constraint"},
+        {**common, "AlarmName": "FraudDetection-HighLatency",
+         "MetricName": "AvgLatencyMs", "Statistic": "Average",
          "Period": 300, "EvaluationPeriods": 1, "Threshold": 1000.0,
          "ComparisonOperator": "GreaterThanThreshold",
-         "AlarmDescription": "End-to-end latency over 1000ms"},
-        {**common, "AlarmName": "FraudDetection-FraudRate-Zero",
+         "AlarmDescription": "End-to-end latency exceeds 1000ms SLA"},
+        {**common, "AlarmName": "FraudDetection-ZeroFraudRate",
          "MetricName": "FraudRate", "Statistic": "Maximum",
-         "Period": 3600, "EvaluationPeriods": 1, "Threshold": 0.0,
+         "Period": 300, "EvaluationPeriods": 12, "Threshold": 0.0,
          "ComparisonOperator": "LessThanOrEqualToThreshold",
-         "TreatMissingData": "breaching",
-         "AlarmDescription": "Fraud rate flat at 0 for >1h — model may have "
-                             "failed"},
-        {**common, "AlarmName": "FraudDetection-Blocks-High",
-         "MetricName": "AgentDecisions_Block", "Statistic": "Sum",
+         "TreatMissingData": "notBreaching",
+         "AlarmDescription": "No fraud detected for 1 hour"},
+        {**common, "AlarmName": "FraudDetection-ExcessiveBlocks",
+         "MetricName": "DecisionsBlock", "Statistic": "Sum",
          "Period": 3600, "EvaluationPeriods": 1, "Threshold": 100.0,
          "ComparisonOperator": "GreaterThanThreshold",
-         "AlarmDescription": "More than 100 agent BLOCK decisions in 1h"},
+         "AlarmDescription": "More than 100 blocks in one hour"},
     ]
 
 
 def _dashboard_body() -> str:
-    def widget(title, metric, stat="Average"):
+    def widget(title, metrics, stat="Average", annotations=None):
+        props = {"region": REGION, "title": title, "stat": stat,
+                 "metrics": metrics}
+        if annotations:
+            props["annotations"] = {"horizontal": annotations}
         return {"type": "metric", "width": 12, "height": 6,
-                "properties": {"region": REGION, "title": title, "stat": stat,
-                               "metrics": [[NAMESPACE, metric]]}}
+                "properties": props}
     return json.dumps({"widgets": [
-        widget("Transactions / period", "TransactionsProcessed", "Sum"),
-        widget("Fraud rate (%)", "FraudRate"),
-        widget("Latency P50/P95 (ms)", "EndToEndLatencyMs"),
-        widget("Agent BLOCK decisions", "AgentDecisions_Block", "Sum"),
+        widget("Transactions processed", [[NAMESPACE, "TransactionsProcessed"]],
+               "Sum"),
+        widget("Fraud rate (%)", [[NAMESPACE, "FraudRate"]]),
+        widget("False positive rate (%)", [[NAMESPACE, "FalsePositiveRate"]],
+               annotations=[{"label": "5% cap", "value": 5.0}]),
+        widget("Avg latency (ms)", [[NAMESPACE, "AvgLatencyMs"]],
+               annotations=[{"label": "1000ms SLA", "value": 1000.0}]),
+        widget("Decision distribution",
+               [[NAMESPACE, "DecisionsHold"], [NAMESPACE, "DecisionsBlock"]],
+               "Sum"),
+        widget("Daily fraud saving (£)", [[NAMESPACE, "DailyFraudSavingGBP"]]),
     ]})
 
 
