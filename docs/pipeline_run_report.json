@@ -1,22 +1,21 @@
 {
   "limit": 30,
   "target_tps": 10,
-  "elapsed_seconds": 3.35,
+  "elapsed_seconds": 3.33,
   "producer": {
     "published": 30,
     "errors": 0,
-    "elapsed_seconds": 3.28,
-    "tps": 9.16
+    "elapsed_seconds": 3.29,
+    "tps": 9.13
   },
   "enricher": {
     "enriched": 30,
-    "avg_enrich_ms": 0.113
+    "avg_enrich_ms": 0.114
   },
   "scorer": {
     "scored": 30,
     "decisions": {
-      "REVIEW": 27,
-      "APPROVE": 3
+      "REVIEW": 30
     }
   },
   "agent": {
@@ -25,15 +24,14 @@
   "audit_summary": {
     "total_decisions": 30,
     "by_decision_type": {
-      "REVIEW": 27,
-      "APPROVE": 3
+      "REVIEW": 30
     },
     "by_confidence": {},
     "fraud_rate": 1.0
   },
   "decisions": {
-    "APPROVE": 3,
-    "REVIEW": 27,
+    "APPROVE": 0,
+    "REVIEW": 30,
     "HOLD": 0
   },
   "agent_decisions": {
@@ -41,15 +39,15 @@
     "BLOCK": 0,
     "MONITOR": 0
   },
-  "avg_latency_ms": 29.134,
+  "avg_latency_ms": 25.389,
   "terminal_counts": {
-    "approved": 3,
-    "review": 27,
+    "approved": 0,
+    "review": 30,
     "flagged": 0
   },
   "bus_stats": {
-    "elapsed_seconds": 3.35,
-    "throughput_msg_per_s": 35.87,
+    "elapsed_seconds": 3.33,
+    "throughput_msg_per_s": 36.02,
     "topics": {
       "transactions_inbound": {
         "published": 30,
@@ -62,9 +60,9 @@
         "pending": 0
       },
       "transactions_scored": {
-        "published": 27,
+        "published": 30,
         "consumed": 0,
-        "pending": 27
+        "pending": 30
       },
       "transactions_flagged": {
         "published": 0,
@@ -72,9 +70,9 @@
         "pending": 0
       },
       "transactions_approved": {
-        "published": 3,
+        "published": 0,
         "consumed": 0,
-        "pending": 3
+        "pending": 0
       },
       "audit_log": {
         "published": 30,
